@@ -27,7 +27,10 @@ con dinero ficticio. No se conecta a ningún exchange y no puede mover dinero re
 - Pausa nuevas compras cuando alcanza el límite de caída configurado.
 - Guarda automáticamente la cartera, el historial y la configuración.
 - Permite cambiar porcentajes, ciclos, costes, reserva y protección desde la app.
-- Ejecuta backtests sobre hasta 300 velas diarias públicas BTC-EUR de Coinbase.
+- Ejecuta backtests sobre hasta tres años de velas diarias públicas BTC-EUR de Coinbase.
+- Compara la estrategia con comprar y mantener, y muestra aciertos y rentabilidad anualizada.
+- Marca compras y ventas directamente sobre el gráfico de precios.
+- Explica por qué el bot compra, espera o bloquea una operación.
 - Mientras el bot automático está activo, evita el reposo inactivo de macOS;
   la pantalla sí puede apagarse.
 - Las referencias de compra caducan después de cinco minutos de forma
