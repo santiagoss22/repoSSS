@@ -30,6 +30,7 @@ con dinero ficticio. No se conecta a ningún exchange y no puede mover dinero re
 - Ejecuta backtests sobre hasta tres años de velas diarias públicas BTC-EUR de Coinbase.
 - Compara la estrategia con comprar y mantener, y muestra aciertos y rentabilidad anualizada.
 - Marca compras y ventas directamente sobre el gráfico de precios.
+- Mantiene en el lateral el precio de cada lote abierto y su diferencia porcentual.
 - Explica por qué el bot compra, espera o bloquea una operación.
 - Permite reiniciar con confirmación el saldo, BTC, histórico y precio simulado.
 - Mientras el bot automático está activo, evita el reposo inactivo de macOS;

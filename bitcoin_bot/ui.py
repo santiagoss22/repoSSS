@@ -100,11 +100,17 @@ class PriceChart(QWidget):
         super().__init__()
         self.prices: list[float] = []
         self.trades = []
+        self.purchase_levels: list[tuple[float, bool]] = []
         self.setMinimumHeight(210)
 
-    def set_data(self, prices: list[float], trades: list) -> None:
+    def set_data(self, prices: list[float], trades: list, lots: list) -> None:
         self.prices = prices[-120:]
         self.trades = trades[-40:]
+        self.purchase_levels = [
+            (lot.cost_basis_eur / lot.bitcoin, lot.frozen)
+            for lot in lots
+            if lot.bitcoin > 0
+        ][-8:]
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -119,10 +125,12 @@ class PriceChart(QWidget):
             return
         low, high = min(self.prices), max(self.prices)
         spread = max(high - low, 1.0)
-        width, height = max(self.width() - 24, 1), max(self.height() - 24, 1)
+        left, right = 132, 12
+        width = max(self.width() - left - right, 1)
+        height = max(self.height() - 24, 1)
         points = [
             (
-                12 + index * width / (len(self.prices) - 1),
+                left + index * width / (len(self.prices) - 1),
                 12 + (high - price) * height / spread,
             )
             for index, price in enumerate(self.prices)
@@ -141,6 +149,7 @@ class PriceChart(QWidget):
         painter.fillPath(area, gradient)
         painter.setPen(QPen(QColor("#f59e0b"), 2))
         painter.drawPath(path)
+        self._draw_purchase_levels(painter, low, high, height, left)
         # Sitúa cada operación en el punto visible cuyo precio más se aproxima
         # al precio ejecutado. Esto mantiene el gráfico útil tras reiniciar.
         used: set[tuple[int, str]] = set()
@@ -161,6 +170,30 @@ class PriceChart(QWidget):
             painter.setPen(QPen(color, 1))
             label = "C" if trade.side == "COMPRA" else "V"
             painter.drawText(int(x) + 7, int(y) - 7, label)
+
+    def _draw_purchase_levels(
+        self, painter: QPainter, low: float, high: float, height: float, left: int
+    ) -> None:
+        if not self.purchase_levels:
+            return
+        spread = max(high - low, 1.0)
+        current = self.prices[-1]
+        occupied: list[float] = []
+        for level, frozen in self.purchase_levels:
+            raw_y = 12 + (high - level) * height / spread
+            y = min(max(raw_y, 14), self.height() - 14)
+            while any(abs(y - previous) < 17 for previous in occupied):
+                y = min(y + 17, self.height() - 14)
+            occupied.append(y)
+            difference = (current / level - 1) * 100
+            arrow = "↑" if raw_y < 14 else "↓" if raw_y > self.height() - 14 else ""
+            color = QColor("#14b8a6" if frozen else "#22c55e")
+            painter.setPen(QPen(color, 1, Qt.DashLine))
+            painter.drawLine(left - 10, int(y), self.width() - 12, int(y))
+            painter.setPen(QPen(color, 1))
+            state = "◆" if frozen else "C"
+            text = f"{arrow}{state} {level:,.0f} €  {difference:+.1f}%"
+            painter.drawText(8, int(y) + 4, text)
 
 
 class SettingsDialog(QDialog):
@@ -804,7 +837,11 @@ class MainWindow(QMainWindow):
             f"Caída actual {drawdown:.1%} · máxima "
             f"{self.account.max_drawdown:.1%} · límite {self.settings.max_drawdown:.1%}"
         )
-        self.chart.set_data(self.prices, self.account.trades)
+        self.chart.set_data(
+            self.prices,
+            self.account.trades,
+            self.account.lots,
+        )
 
     def _save(self) -> None:
         try:
@@ -846,13 +883,15 @@ class MainWindow(QMainWindow):
             QLabel#cardTitle { color: #64748b; font-size: 10px; font-weight: 800; }
             QLabel#cardValue { font-size: 19px; font-weight: 900; }
             QLabel#cardDetail { color: #94a3b8; font-size: 11px; }
-            QLabel#botStatus, QLabel#recoveryStatus, QLabel#powerStatus {
+            QLabel#botStatus, QLabel#recoveryStatus, QLabel#powerStatus,
+            QLabel#decisionStatus {
                 background: #172033; border: 1px solid #26344d;
                 border-radius: 8px; padding: 9px; font-size: 12px;
             }
             QLabel#botStatus { color: #93c5fd; }
             QLabel#recoveryStatus { color: #fbbf24; }
             QLabel#powerStatus { color: #86efac; }
+            QLabel#decisionStatus { color: #cbd5e1; }
             QPushButton {
                 background: #334155; border: none; border-radius: 9px;
                 color: white; font-weight: 700; padding: 10px 15px;
