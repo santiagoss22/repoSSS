@@ -1,0 +1,2 @@
+"""Bitcoin Paper Bot."""
+

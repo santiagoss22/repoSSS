@@ -1,0 +1,809 @@
+from __future__ import annotations
+
+from pathlib import Path
+import os
+import subprocess
+import sys
+
+from PySide6.QtCore import QStandardPaths, QTimer, Qt
+from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFrame,
+    QFormLayout,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QSpinBox,
+    QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+
+from bitcoin_bot.backtest import download_coinbase_daily_prices, run_backtest
+from bitcoin_bot.config import BotSettings
+from bitcoin_bot.persistence import load_state, save_state
+from bitcoin_bot.simulator import (
+    MovingAverageStrategy,
+    PaperAccount,
+    PriceSimulator,
+    RecoveryController,
+    TrendConfirmation,
+)
+
+
+class KeepAwakeManager:
+    """Evita el reposo inactivo del Mac mientras el bot está activado."""
+
+    def __init__(self) -> None:
+        self.process: subprocess.Popen | None = None
+
+    @property
+    def active(self) -> bool:
+        return self.process is not None and self.process.poll() is None
+
+    def start(self) -> bool:
+        if self.active:
+            return True
+        executable = Path("/usr/bin/caffeinate")
+        if not executable.exists():
+            return False
+        self.process = subprocess.Popen(
+            [str(executable), "-i", "-w", str(os.getpid())],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return self.active
+
+    def stop(self) -> None:
+        if self.active:
+            self.process.terminate()
+        self.process = None
+
+
+class MetricCard(QFrame):
+    def __init__(self, title: str, accent: str = "#94a3b8") -> None:
+        super().__init__()
+        self.setObjectName("metricCard")
+        self.title_label = QLabel(title.upper())
+        self.title_label.setObjectName("cardTitle")
+        self.value_label = QLabel("—")
+        self.value_label.setObjectName("cardValue")
+        self.value_label.setStyleSheet(f"color: {accent};")
+        self.detail_label = QLabel("")
+        self.detail_label.setObjectName("cardDetail")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(15, 13, 15, 13)
+        layout.setSpacing(4)
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.value_label)
+        layout.addWidget(self.detail_label)
+
+    def set_value(self, value: str, detail: str = "") -> None:
+        self.value_label.setText(value)
+        self.detail_label.setText(detail)
+
+
+class PriceChart(QWidget):
+    def __init__(self) -> None:
+        super().__init__()
+        self.prices: list[float] = []
+        self.setMinimumHeight(210)
+
+    def set_prices(self, prices: list[float]) -> None:
+        self.prices = prices[-120:]
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillRect(self.rect(), QColor("#0f172a"))
+        painter.setPen(QPen(QColor("#1e293b"), 1))
+        for division in range(1, 5):
+            y = int(self.height() * division / 5)
+            painter.drawLine(12, y, self.width() - 12, y)
+        if len(self.prices) < 2:
+            return
+        low, high = min(self.prices), max(self.prices)
+        spread = max(high - low, 1.0)
+        width, height = max(self.width() - 24, 1), max(self.height() - 24, 1)
+        points = [
+            (
+                12 + index * width / (len(self.prices) - 1),
+                12 + (high - price) * height / spread,
+            )
+            for index, price in enumerate(self.prices)
+        ]
+        path = QPainterPath()
+        path.moveTo(points[0][0], points[0][1])
+        for point in points[1:]:
+            path.lineTo(point[0], point[1])
+        area = QPainterPath(path)
+        area.lineTo(points[-1][0], self.height() - 12)
+        area.lineTo(points[0][0], self.height() - 12)
+        area.closeSubpath()
+        gradient = QLinearGradient(0, 0, 0, self.height())
+        gradient.setColorAt(0, QColor(245, 158, 11, 90))
+        gradient.setColorAt(1, QColor(245, 158, 11, 3))
+        painter.fillPath(area, gradient)
+        painter.setPen(QPen(QColor("#f59e0b"), 2))
+        painter.drawPath(path)
+
+
+class SettingsDialog(QDialog):
+    def __init__(self, settings: BotSettings, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Configuración del bot")
+        self.inputs: dict[str, QDoubleSpinBox | QSpinBox] = {}
+        form = QFormLayout(self)
+
+        def percentage(name: str, label: str, value: float, maximum: float = 100):
+            field = QDoubleSpinBox()
+            field.setRange(0.01, maximum)
+            field.setDecimals(2)
+            field.setSuffix(" %")
+            field.setValue(value * 100)
+            form.addRow(label, field)
+            self.inputs[name] = field
+
+        percentage(
+            "buy_fraction",
+            "Compra automática",
+            settings.buy_fraction,
+            maximum=80,
+        )
+        percentage("sell_gain", "Objetivo de beneficio", settings.sell_gain)
+        percentage(
+            "fee_rate",
+            "Comisión por operación",
+            settings.fee_rate,
+            maximum=10,
+        )
+        percentage(
+            "slippage_rate",
+            "Deslizamiento estimado",
+            settings.slippage_rate,
+            maximum=10,
+        )
+        percentage("max_drawdown", "Pausa por caída máxima", settings.max_drawdown)
+
+        reserve = QDoubleSpinBox()
+        reserve.setRange(0, 1_000_000)
+        reserve.setSuffix(" €")
+        reserve.setValue(settings.minimum_cash_eur)
+        form.addRow("Reserva mínima", reserve)
+        self.inputs["minimum_cash_eur"] = reserve
+
+        minimum_trade = QDoubleSpinBox()
+        minimum_trade.setRange(10, 100_000)
+        minimum_trade.setSuffix(" €")
+        minimum_trade.setValue(settings.minimum_trade_eur)
+        form.addRow("Compra mínima", minimum_trade)
+        self.inputs["minimum_trade_eur"] = minimum_trade
+
+        cycles = QSpinBox()
+        cycles.setRange(1, 20)
+        cycles.setValue(settings.confirmation_ticks)
+        form.addRow("Ciclos de confirmación", cycles)
+        self.inputs["confirmation_ticks"] = cycles
+
+        expiry = QSpinBox()
+        expiry.setRange(15, 3_600)
+        expiry.setSuffix(" s")
+        expiry.setValue(settings.reference_expiry_ticks)
+        form.addRow("Caducidad de referencia", expiry)
+        self.inputs["reference_expiry_ticks"] = expiry
+
+        percentage(
+            "recovery_loss_trigger",
+            "Activar recuperación con pérdida",
+            settings.recovery_loss_trigger,
+            maximum=50,
+        )
+        percentage(
+            "recovery_range",
+            "Rango máximo estable",
+            settings.recovery_range,
+            maximum=10,
+        )
+        stable_ticks = QSpinBox()
+        stable_ticks.setRange(5, 120)
+        stable_ticks.setValue(settings.recovery_stable_ticks)
+        form.addRow("Ciclos para estabilización", stable_ticks)
+        self.inputs["recovery_stable_ticks"] = stable_ticks
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Save | QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def apply_to(self, settings: BotSettings) -> None:
+        settings.buy_fraction = self.inputs["buy_fraction"].value() / 100
+        settings.sell_gain = self.inputs["sell_gain"].value() / 100
+        settings.fee_rate = self.inputs["fee_rate"].value() / 100
+        settings.slippage_rate = self.inputs["slippage_rate"].value() / 100
+        settings.max_drawdown = self.inputs["max_drawdown"].value() / 100
+        settings.minimum_cash_eur = self.inputs["minimum_cash_eur"].value()
+        settings.minimum_trade_eur = self.inputs["minimum_trade_eur"].value()
+        settings.confirmation_ticks = int(
+            self.inputs["confirmation_ticks"].value()
+        )
+        settings.reference_expiry_ticks = int(
+            self.inputs["reference_expiry_ticks"].value()
+        )
+        settings.recovery_loss_trigger = (
+            self.inputs["recovery_loss_trigger"].value() / 100
+        )
+        settings.recovery_range = self.inputs["recovery_range"].value() / 100
+        settings.recovery_stable_ticks = int(
+            self.inputs["recovery_stable_ticks"].value()
+        )
+
+
+class MainWindow(QMainWindow):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("Bitcoin Paper Bot")
+        self.resize(1050, 760)
+        data_dir = Path(QStandardPaths.writableLocation(QStandardPaths.AppDataLocation))
+        self.state_path = data_dir / "paper_bot_state.json"
+        reset_marker = data_dir / "reset_on_next_launch"
+        try:
+            self.account, self.settings = load_state(self.state_path)
+        except (OSError, ValueError, TypeError):
+            self.account, self.settings = PaperAccount(), BotSettings()
+        if reset_marker.exists():
+            self.account = PaperAccount()
+            try:
+                reset_marker.unlink()
+                save_state(self.state_path, self.account, self.settings)
+            except OSError:
+                pass
+
+        self.account.minimum_cash_eur = self.settings.minimum_cash_eur
+        self.account.minimum_trade_eur = self.settings.minimum_trade_eur
+        self.market = PriceSimulator(initial_price=self.account.last_market_price_eur)
+        self.strategy = MovingAverageStrategy()
+        self.confirmation = self._new_confirmation()
+        self.recovery = self._new_recovery()
+        self.keep_awake = KeepAwakeManager()
+        self.prices = [self.market.price]
+
+        self.brand_icon = QLabel("₿")
+        self.brand_icon.setObjectName("brandIcon")
+        self.brand_title = QLabel("BITCOIN PAPER BOT")
+        self.brand_title.setObjectName("brandTitle")
+        self.brand_subtitle = QLabel("Simulación · Estrategia automática · Sin dinero real")
+        self.brand_subtitle.setObjectName("brandSubtitle")
+        self.price_label = QLabel()
+        self.price_label.setObjectName("price")
+        self.signal_label = QLabel("● ESPERAR")
+        self.signal_label.setObjectName("signalBadge")
+        self.signal_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.bot_status_label = QLabel("Bot: esperando tendencia")
+        self.bot_status_label.setObjectName("botStatus")
+        self.recovery_status_label = QLabel("Recuperación: modo normal")
+        self.recovery_status_label.setObjectName("recoveryStatus")
+        self.power_status_label = QLabel(
+            "Energía: comportamiento normal del Mac"
+        )
+        self.power_status_label.setObjectName("powerStatus")
+        self.bot_toggle = QCheckBox("Bot automático")
+        self.bot_toggle.setObjectName("botToggle")
+
+        self.buy_button = QPushButton("Comprar (20 %)")
+        self.buy_button.setObjectName("buyButton")
+        self.buy_half_button = QPushButton("Comprar (50 %)")
+        self.buy_half_button.setObjectName("buyButton")
+        self.sell_button = QPushButton("Vender todo")
+        self.sell_button.setObjectName("sellButton")
+        self.settings_button = QPushButton("⚙ Configuración")
+        self.backtest_button = QPushButton("↗ Backtest histórico")
+        self.chart = PriceChart()
+        self.drawdown_bar = QProgressBar()
+        self.drawdown_bar.setRange(0, 1000)
+        self.drawdown_bar.setTextVisible(True)
+        self.drawdown_bar.setObjectName("riskBar")
+        self.cards = {
+            "cash": MetricCard("Efectivo disponible", "#60a5fa"),
+            "bitcoin": MetricCard("Posición Bitcoin", "#fbbf24"),
+            "equity": MetricCard("Patrimonio total", "#a78bfa"),
+            "profit": MetricCard("Resultado total", "#34d399"),
+            "average": MetricCard("Coste medio", "#cbd5e1"),
+            "target": MetricCard("Objetivo neto", "#fb923c"),
+            "realized": MetricCard("Beneficio realizado", "#4ade80"),
+            "fees": MetricCard("Comisiones", "#f87171"),
+        }
+        self.table = QTableWidget(0, 7)
+        self.table.setAlternatingRowColors(True)
+        self.table.setHorizontalHeaderLabels(
+            ["Hora", "Acción", "BTC", "Precio", "Comisión", "Resultado", "Motivo"]
+        )
+        self.table.horizontalHeader().setStretchLastSection(True)
+
+        brand_text = QVBoxLayout()
+        brand_text.setSpacing(0)
+        brand_text.addWidget(self.brand_title)
+        brand_text.addWidget(self.brand_subtitle)
+        header = QHBoxLayout()
+        header.addWidget(self.brand_icon)
+        header.addLayout(brand_text)
+        header.addStretch()
+        header.addWidget(self.settings_button)
+        header.addWidget(self.backtest_button)
+
+        market_header = QHBoxLayout()
+        market_header.addWidget(self.price_label)
+        market_header.addStretch()
+        market_header.addWidget(self.signal_label)
+
+        controls = QHBoxLayout()
+        controls.addWidget(self.bot_toggle)
+        controls.addStretch()
+        controls.addWidget(self.buy_button)
+        controls.addWidget(self.buy_half_button)
+        controls.addWidget(self.sell_button)
+
+        metrics_grid = QGridLayout()
+        metrics_grid.setSpacing(10)
+        for index, card in enumerate(self.cards.values()):
+            metrics_grid.addWidget(card, index // 4, index % 4)
+
+        chart_panel = QFrame()
+        chart_panel.setObjectName("panel")
+        chart_layout = QVBoxLayout(chart_panel)
+        chart_layout.setContentsMargins(14, 12, 14, 12)
+        chart_title = QLabel("EVOLUCIÓN SIMULADA DE BTC")
+        chart_title.setObjectName("sectionTitle")
+        chart_layout.addWidget(chart_title)
+        chart_layout.addWidget(self.chart)
+
+        risk_panel = QFrame()
+        risk_panel.setObjectName("panel")
+        risk_layout = QVBoxLayout(risk_panel)
+        risk_title = QLabel("RIESGO Y AUTOMATIZACIÓN")
+        risk_title.setObjectName("sectionTitle")
+        risk_layout.addWidget(risk_title)
+        risk_layout.addWidget(self.bot_status_label)
+        risk_layout.addWidget(self.recovery_status_label)
+        risk_layout.addWidget(self.power_status_label)
+        risk_layout.addWidget(self.drawdown_bar)
+        risk_layout.addLayout(controls)
+
+        dashboard = QWidget()
+        dashboard_layout = QVBoxLayout(dashboard)
+        dashboard_layout.setContentsMargins(0, 12, 0, 0)
+        dashboard_layout.setSpacing(10)
+        dashboard_layout.addLayout(market_header)
+        dashboard_layout.addLayout(metrics_grid)
+        dashboard_layout.addWidget(chart_panel)
+        dashboard_layout.addWidget(risk_panel)
+
+        history = QWidget()
+        history_layout = QVBoxLayout(history)
+        history_layout.setContentsMargins(0, 12, 0, 0)
+        history_title = QLabel("HISTORIAL DE OPERACIONES SIMULADAS")
+        history_title.setObjectName("sectionTitle")
+        history_layout.addWidget(history_title)
+        history_layout.addWidget(self.table)
+
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.addTab(dashboard, "  Panel  ")
+        self.tabs.addTab(history, "  Operaciones  ")
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(22, 18, 22, 18)
+        layout.setSpacing(8)
+        layout.addLayout(header)
+        layout.addWidget(self.tabs)
+
+        container = QWidget()
+        container.setObjectName("app")
+        container.setLayout(layout)
+        self.setCentralWidget(container)
+        self._apply_style()
+        self._load_trades()
+
+        self.buy_button.clicked.connect(
+            lambda: self._buy("Compra manual", self.settings.buy_fraction)
+        )
+        self.buy_half_button.clicked.connect(
+            lambda: self._buy("Compra manual del 50 %", 0.50)
+        )
+        self.sell_button.clicked.connect(lambda: self._sell("Venta manual"))
+        self.bot_toggle.toggled.connect(self._on_bot_toggled)
+        self.settings_button.clicked.connect(self._open_settings)
+        self.backtest_button.clicked.connect(self._run_backtest)
+
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._tick)
+        self.timer.start(1_000)
+        self._refresh()
+
+    def _on_bot_toggled(self, enabled: bool) -> None:
+        if enabled:
+            if self.keep_awake.start():
+                self.power_status_label.setText(
+                    "Energía: bot activo · la pantalla puede apagarse, "
+                    "pero el Mac permanecerá despierto"
+                )
+            else:
+                self.power_status_label.setText(
+                    "Energía: no se pudo impedir el reposo del Mac"
+                )
+        else:
+            self.keep_awake.stop()
+            self.power_status_label.setText(
+                "Energía: comportamiento normal del Mac"
+            )
+
+    def _new_confirmation(self) -> TrendConfirmation:
+        return TrendConfirmation(
+            confirmation_ticks=self.settings.confirmation_ticks,
+            sell_gain=self.settings.sell_gain,
+            reference_expiry_ticks=self.settings.reference_expiry_ticks,
+        )
+
+    def _new_recovery(self) -> RecoveryController:
+        return RecoveryController(
+            loss_trigger=self.settings.recovery_loss_trigger,
+            stable_ticks=self.settings.recovery_stable_ticks,
+            stable_range=self.settings.recovery_range,
+        )
+
+    def _tick(self) -> None:
+        self.prices.append(self.market.tick())
+        signal = self.strategy.signal(self.prices)
+        signal_colors = {
+            "COMPRAR": "#34d399",
+            "VENDER": "#f87171",
+            "ESPERAR": "#94a3b8",
+        }
+        self.signal_label.setText(f"● {signal}")
+        self.signal_label.setStyleSheet(
+            f"color: {signal_colors.get(signal, '#94a3b8')};"
+        )
+        drawdown = self.account.record_equity(self.market.price)
+        protected = drawdown >= self.settings.max_drawdown
+        if self.bot_toggle.isChecked():
+            recovery_status = self.recovery.update(
+                self.account, self.market.price
+            )
+            self.recovery_status_label.setText(
+                f"Recuperación: {recovery_status}"
+            )
+            include_frozen = not self.recovery.active
+            profitable = self.account.profitable_lots(
+                self.market.price,
+                self.settings.sell_gain,
+                self.settings.fee_rate,
+                self.settings.slippage_rate,
+                include_frozen=include_frozen,
+            )
+            if profitable:
+                self.account.sell_profitable_lots(
+                    self.market.price,
+                    self.settings.sell_gain,
+                    f"Objetivo individual alcanzado ({len(profitable)} lote/s)",
+                    fee_rate=self.settings.fee_rate,
+                    slippage_rate=self.settings.slippage_rate,
+                    include_frozen=include_frozen,
+                )
+                self._append_trade()
+                self._save()
+                self.confirmation.reset()
+                self.bot_status_label.setText(
+                    f"Bot: venta de {len(profitable)} lote/s rentable/s"
+                )
+                self._refresh()
+                return
+            action, status = self.confirmation.update(
+                self.market.price,
+                False,
+            )
+            if protected and not self.recovery.enabled:
+                status = (
+                    f"Protección activada: caída {drawdown:.1%}. "
+                    "Esperando rango estable."
+                )
+            self.bot_status_label.setText(f"Bot: {status}")
+            if (
+                action == "COMPRAR"
+                and (not protected or self.recovery.enabled)
+                and self.account.can_buy(
+                    self.market.price,
+                    fee_rate=self.settings.fee_rate,
+                )
+            ):
+                self._buy("Precio bajo referencia", self.settings.buy_fraction)
+            elif action == "COMPRAR":
+                self.bot_status_label.setText(
+                    f"Bot: compra omitida · mínimo "
+                    f"{self.account.minimum_trade_eur:,.0f} € y reserva "
+                    f"{self.account.minimum_cash_eur:,.0f} €"
+                )
+        else:
+            self.confirmation.reset()
+            self.bot_status_label.setText("Bot: desactivado")
+            self.recovery_status_label.setText(
+                "Recuperación: pausada con el bot desactivado"
+            )
+        self._refresh()
+
+    def _buy(self, reason: str, fraction: float) -> None:
+        try:
+            self.account.minimum_cash_eur = self.settings.minimum_cash_eur
+            self.account.minimum_trade_eur = self.settings.minimum_trade_eur
+            requested = self.account.equity(self.market.price) * fraction
+            self.account.buy(
+                self.market.price,
+                requested,
+                reason,
+                max_fraction=fraction,
+                fee_rate=self.settings.fee_rate,
+                slippage_rate=self.settings.slippage_rate,
+            )
+            self._append_trade()
+            self._save()
+        except ValueError as error:
+            QMessageBox.information(self, "No se puede comprar", str(error))
+        self._refresh()
+
+    def _sell(self, reason: str) -> None:
+        try:
+            sell_method = (
+                self.account.sell_tradable
+                if self.recovery.active
+                else self.account.sell_all
+            )
+            sell_method(
+                self.market.price,
+                reason,
+                fee_rate=self.settings.fee_rate,
+                slippage_rate=self.settings.slippage_rate,
+            )
+            self._append_trade()
+            self._save()
+        except ValueError as error:
+            QMessageBox.information(self, "No se puede vender", str(error))
+        self._refresh()
+
+    def _open_settings(self) -> None:
+        dialog = SettingsDialog(self.settings, self)
+        if dialog.exec() == QDialog.Accepted:
+            dialog.apply_to(self.settings)
+            self.account.minimum_cash_eur = self.settings.minimum_cash_eur
+            self.confirmation = self._new_confirmation()
+            self.recovery = self._new_recovery()
+            self.buy_button.setText(
+                f"Comprar ({self.settings.buy_fraction:.0%})"
+            )
+            self._save()
+            self._refresh()
+
+    def _run_backtest(self) -> None:
+        self.backtest_button.setEnabled(False)
+        self.backtest_button.setText("Descargando histórico…")
+        QApplication.processEvents()
+        try:
+            prices = download_coinbase_daily_prices()
+            result = run_backtest(prices, self.settings)
+            QMessageBox.information(
+                self,
+                "Backtest BTC-EUR · Coinbase",
+                (
+                    f"Velas diarias: {len(prices)}\n"
+                    f"Capital final: {result.ending_equity:,.2f} €\n"
+                    f"Rentabilidad: {result.return_percent:+.2f} %\n"
+                    f"Beneficio realizado: {result.realized_profit:+,.2f} €\n"
+                    f"Comisiones: {result.total_fees:,.2f} €\n"
+                    f"Caída máxima: {result.max_drawdown_percent:.2f} %\n"
+                    f"Operaciones: {result.trades}\n\n"
+                    "Resultado histórico orientativo; no predice resultados futuros."
+                ),
+            )
+        except Exception as error:
+            QMessageBox.warning(
+                self,
+                "No se pudo ejecutar el backtest",
+                f"No se pudo descargar o procesar el histórico:\n{error}",
+            )
+        finally:
+            self.backtest_button.setEnabled(True)
+            self.backtest_button.setText("↗ Backtest histórico")
+
+    def _load_trades(self) -> None:
+        for _ in self.account.trades:
+            self._append_trade()
+
+    def _append_trade(self) -> None:
+        trade_index = self.table.rowCount()
+        if trade_index >= len(self.account.trades):
+            return
+        trade = self.account.trades[trade_index]
+        self.table.insertRow(trade_index)
+        values = [
+            trade.timestamp.strftime("%d/%m %H:%M"),
+            trade.side,
+            f"{trade.bitcoin:.6f}",
+            f"{trade.price_eur:,.2f} €",
+            f"{trade.fee_eur:,.2f} €",
+            f"{trade.pnl_eur:+,.2f} €" if trade.side == "VENTA" else "—",
+            trade.reason,
+        ]
+        for column, value in enumerate(values):
+            self.table.setItem(trade_index, column, QTableWidgetItem(value))
+
+    def _refresh(self) -> None:
+        price = self.market.price
+        equity = self.account.equity(price)
+        total_profit = equity - self.account.initial_cash_eur
+        unrealized = self.account.unrealized_profit(price)
+        drawdown = self.account.record_equity(price)
+        target = self.account.next_lot_target_price(
+            self.settings.sell_gain,
+            self.settings.fee_rate,
+            self.settings.slippage_rate,
+            include_frozen=not self.recovery.active,
+        )
+        self.price_label.setText(f"BTC  {price:,.2f} €")
+        target_text = f"{target:,.2f} €" if target else "—"
+        self.cards["cash"].set_value(
+            f"{self.account.cash_eur:,.2f} €",
+            (
+                f"Reserva: {self.account.minimum_cash_eur:,.0f} € · "
+                f"compra mín.: {self.account.minimum_trade_eur:,.0f} €"
+            ),
+        )
+        self.cards["bitcoin"].set_value(
+            f"{self.account.bitcoin:.6f} BTC",
+            (
+                f"Congelado: {self.account.frozen_bitcoin:.6f} · "
+                f"operable: {self.account.tradable_bitcoin:.6f}"
+            ),
+        )
+        self.cards["equity"].set_value(
+            f"{equity:,.2f} €",
+            f"Inicial: {self.account.initial_cash_eur:,.0f} €",
+        )
+        self.cards["profit"].set_value(
+            f"{total_profit:+,.2f} €",
+            f"{total_profit / self.account.initial_cash_eur:+.2%}",
+        )
+        self.cards["average"].set_value(
+            f"{self.account.average_cost_eur:,.2f} €",
+            f"No realizado: {unrealized:+,.2f} €",
+        )
+        self.cards["target"].set_value(
+            target_text,
+            f"Beneficio neto: +{self.settings.sell_gain:.1%}",
+        )
+        self.cards["realized"].set_value(
+            f"{self.account.realized_profit_eur:+,.2f} €",
+            f"{sum(1 for trade in self.account.trades if trade.side == 'VENTA')} ventas",
+        )
+        self.cards["fees"].set_value(
+            f"{self.account.total_fees_eur:,.2f} €",
+            f"Actual: {self.settings.fee_rate:.2%} por operación",
+        )
+        risk_ratio = min(drawdown / max(self.settings.max_drawdown, 0.0001), 1.0)
+        self.drawdown_bar.setValue(round(risk_ratio * 1000))
+        self.drawdown_bar.setFormat(
+            f"Caída actual {drawdown:.1%} · máxima "
+            f"{self.account.max_drawdown:.1%} · límite {self.settings.max_drawdown:.1%}"
+        )
+        self.chart.set_prices(self.prices)
+
+    def _save(self) -> None:
+        try:
+            save_state(self.state_path, self.account, self.settings)
+        except OSError:
+            pass
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self.keep_awake.stop()
+        self._save()
+        event.accept()
+
+    def _apply_style(self) -> None:
+        self.setStyleSheet(
+            """
+            QMainWindow, QWidget#app { background: #0b1220; color: #e5e7eb; }
+            QLabel#brandIcon {
+                background: #f59e0b; color: #0b1220; border-radius: 21px;
+                font-size: 28px; font-weight: 900; min-width: 42px;
+                min-height: 42px; max-width: 42px; max-height: 42px;
+                qproperty-alignment: AlignCenter;
+            }
+            QLabel#brandTitle { color: white; font-size: 17px; font-weight: 900; }
+            QLabel#brandSubtitle { color: #64748b; font-size: 11px; }
+            QLabel#price { color: #fbbf24; font-size: 30px; font-weight: 800; }
+            QLabel#signalBadge {
+                background: #172033; border: 1px solid #334155;
+                border-radius: 13px; padding: 6px 12px; font-weight: 800;
+                color: #94a3b8;
+            }
+            QLabel#sectionTitle {
+                color: #94a3b8; font-size: 11px; font-weight: 900;
+                letter-spacing: 1px;
+            }
+            QFrame#metricCard, QFrame#panel {
+                background: #111827; border: 1px solid #1f2a3d;
+                border-radius: 12px;
+            }
+            QLabel#cardTitle { color: #64748b; font-size: 10px; font-weight: 800; }
+            QLabel#cardValue { font-size: 19px; font-weight: 900; }
+            QLabel#cardDetail { color: #94a3b8; font-size: 11px; }
+            QLabel#botStatus, QLabel#recoveryStatus, QLabel#powerStatus {
+                background: #172033; border: 1px solid #26344d;
+                border-radius: 8px; padding: 9px; font-size: 12px;
+            }
+            QLabel#botStatus { color: #93c5fd; }
+            QLabel#recoveryStatus { color: #fbbf24; }
+            QLabel#powerStatus { color: #86efac; }
+            QPushButton {
+                background: #334155; border: none; border-radius: 9px;
+                color: white; font-weight: 700; padding: 10px 15px;
+            }
+            QPushButton:hover { background: #475569; }
+            QPushButton#buyButton { background: #059669; }
+            QPushButton#buyButton:hover { background: #10b981; }
+            QPushButton#sellButton { background: #dc2626; }
+            QPushButton#sellButton:hover { background: #ef4444; }
+            QCheckBox { color: #e5e7eb; font-weight: 700; spacing: 8px; }
+            QTabWidget::pane { border: none; }
+            QTabBar::tab {
+                background: transparent; color: #64748b; padding: 9px 16px;
+                border-bottom: 2px solid transparent; font-weight: 700;
+            }
+            QTabBar::tab:selected {
+                color: #fbbf24; border-bottom: 2px solid #f59e0b;
+            }
+            QProgressBar#riskBar {
+                background: #0f172a; border: 1px solid #26344d;
+                border-radius: 7px; color: white; height: 19px;
+                text-align: center; font-size: 10px; font-weight: 700;
+            }
+            QProgressBar#riskBar::chunk {
+                background: #f59e0b; border-radius: 6px;
+            }
+            QTableWidget {
+                background: #111827; alternate-background-color: #172033;
+                border: 1px solid #26344d; border-radius: 8px;
+                color: #e5e7eb; gridline-color: #26344d;
+            }
+            QHeaderView::section {
+                background: #1f2937; color: #cbd5e1; border: none;
+                padding: 8px; font-weight: 700;
+            }
+            QDialog { background: #111827; color: #e5e7eb; }
+            QDoubleSpinBox, QSpinBox {
+                background: #1f2937; color: white; padding: 5px;
+                border: 1px solid #334155; border-radius: 5px;
+            }
+            """
+        )
+
+
+def run() -> None:
+    app = QApplication(sys.argv)
+    app.setApplicationName("Bitcoin Paper Bot")
+    app.setOrganizationName("Santiago")
+    app.setStyle("Fusion")
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
