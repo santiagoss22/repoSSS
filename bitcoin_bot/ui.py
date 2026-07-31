@@ -338,6 +338,8 @@ class MainWindow(QMainWindow):
         self.sell_button = QPushButton("Vender todo")
         self.sell_button.setObjectName("sellButton")
         self.settings_button = QPushButton("⚙ Configuración")
+        self.reset_button = QPushButton("↺ Reiniciar simulación")
+        self.reset_button.setObjectName("resetButton")
         self.backtest_button = QPushButton("↗ Backtest histórico")
         self.chart = PriceChart()
         self.drawdown_bar = QProgressBar()
@@ -369,6 +371,7 @@ class MainWindow(QMainWindow):
         header.addWidget(self.brand_icon)
         header.addLayout(brand_text)
         header.addStretch()
+        header.addWidget(self.reset_button)
         header.addWidget(self.settings_button)
         header.addWidget(self.backtest_button)
 
@@ -455,6 +458,7 @@ class MainWindow(QMainWindow):
         self.sell_button.clicked.connect(lambda: self._sell("Venta manual"))
         self.bot_toggle.toggled.connect(self._on_bot_toggled)
         self.settings_button.clicked.connect(self._open_settings)
+        self.reset_button.clicked.connect(self._reset_simulation)
         self.backtest_button.clicked.connect(self._run_backtest)
 
         self.timer = QTimer(self)
@@ -648,6 +652,41 @@ class MainWindow(QMainWindow):
             self._save()
             self._refresh()
 
+    def _reset_simulation(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Reiniciar simulación",
+            (
+                "¿Quieres borrar todas las operaciones y empezar de nuevo?\n\n"
+                "El saldo volverá a 10.000 €, la posición BTC quedará a cero "
+                "y el precio simulado volverá a 90.000 €. Tus ajustes se conservarán."
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self.bot_toggle.setChecked(False)
+        self.account = PaperAccount(
+            minimum_cash_eur=self.settings.minimum_cash_eur,
+            minimum_trade_eur=self.settings.minimum_trade_eur,
+        )
+        self.market = PriceSimulator(initial_price=90_000.0)
+        self.strategy = MovingAverageStrategy()
+        self.confirmation = self._new_confirmation()
+        self.recovery = self._new_recovery()
+        self.prices = [self.market.price]
+        self.table.setRowCount(0)
+        self.signal_label.setText("● ESPERAR")
+        self.signal_label.setStyleSheet("color: #94a3b8;")
+        self.bot_status_label.setText("Bot: esperando tendencia")
+        self.recovery_status_label.setText("Recuperación: modo normal")
+        self.decision_label.setText(
+            "Decisión actual: simulación reiniciada; esperando nuevos precios."
+        )
+        self._save()
+        self._refresh()
+
     def _run_backtest(self) -> None:
         self.backtest_button.setEnabled(False)
         self.backtest_button.setText("Descargando histórico…")
@@ -823,6 +862,8 @@ class MainWindow(QMainWindow):
             QPushButton#buyButton:hover { background: #10b981; }
             QPushButton#sellButton { background: #dc2626; }
             QPushButton#sellButton:hover { background: #ef4444; }
+            QPushButton#resetButton { background: #92400e; }
+            QPushButton#resetButton:hover { background: #b45309; }
             QCheckBox { color: #e5e7eb; font-weight: 700; spacing: 8px; }
             QTabWidget::pane { border: none; }
             QTabBar::tab {

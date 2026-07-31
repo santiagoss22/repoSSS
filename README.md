@@ -31,6 +31,7 @@ con dinero ficticio. No se conecta a ningún exchange y no puede mover dinero re
 - Compara la estrategia con comprar y mantener, y muestra aciertos y rentabilidad anualizada.
 - Marca compras y ventas directamente sobre el gráfico de precios.
 - Explica por qué el bot compra, espera o bloquea una operación.
+- Permite reiniciar con confirmación el saldo, BTC, histórico y precio simulado.
 - Mientras el bot automático está activo, evita el reposo inactivo de macOS;
   la pantalla sí puede apagarse.
 - Las referencias de compra caducan después de cinco minutos de forma
