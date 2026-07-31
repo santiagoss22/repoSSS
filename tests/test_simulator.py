@@ -203,6 +203,15 @@ class BacktestTests(unittest.TestCase):
         )
         self.assertGreaterEqual(result.trades, 1)
         self.assertGreater(result.ending_equity, 0)
+        self.assertAlmostEqual(result.buy_hold_return_percent, 12.0)
+        self.assertGreaterEqual(result.winning_sales, 0)
+        self.assertGreaterEqual(result.losing_sales, 0)
+        self.assertGreaterEqual(result.win_rate_percent, 0)
+        self.assertLessEqual(result.win_rate_percent, 100)
+        self.assertAlmostEqual(
+            result.excess_return_percent,
+            result.return_percent - result.buy_hold_return_percent,
+        )
 
 
 class RecoveryModeTests(unittest.TestCase):

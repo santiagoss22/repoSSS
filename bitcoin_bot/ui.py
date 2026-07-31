@@ -99,10 +99,12 @@ class PriceChart(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.prices: list[float] = []
+        self.trades = []
         self.setMinimumHeight(210)
 
-    def set_prices(self, prices: list[float]) -> None:
+    def set_data(self, prices: list[float], trades: list) -> None:
         self.prices = prices[-120:]
+        self.trades = trades[-40:]
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -139,6 +141,26 @@ class PriceChart(QWidget):
         painter.fillPath(area, gradient)
         painter.setPen(QPen(QColor("#f59e0b"), 2))
         painter.drawPath(path)
+        # Sitúa cada operación en el punto visible cuyo precio más se aproxima
+        # al precio ejecutado. Esto mantiene el gráfico útil tras reiniciar.
+        used: set[tuple[int, str]] = set()
+        for trade in self.trades:
+            index = min(
+                range(len(self.prices)),
+                key=lambda item: abs(self.prices[item] - trade.price_eur),
+            )
+            key = (index, trade.side)
+            if key in used:
+                continue
+            used.add(key)
+            x, y = points[index]
+            color = QColor("#22c55e" if trade.side == "COMPRA" else "#ef4444")
+            painter.setBrush(color)
+            painter.setPen(QPen(QColor("#f8fafc"), 1))
+            painter.drawEllipse(int(x) - 5, int(y) - 5, 10, 10)
+            painter.setPen(QPen(color, 1))
+            label = "C" if trade.side == "COMPRA" else "V"
+            painter.drawText(int(x) + 7, int(y) - 7, label)
 
 
 class SettingsDialog(QDialog):
@@ -301,6 +323,11 @@ class MainWindow(QMainWindow):
             "Energía: comportamiento normal del Mac"
         )
         self.power_status_label.setObjectName("powerStatus")
+        self.decision_label = QLabel(
+            "Decisión actual: esperando suficientes datos para evaluar el mercado."
+        )
+        self.decision_label.setObjectName("decisionStatus")
+        self.decision_label.setWordWrap(True)
         self.bot_toggle = QCheckBox("Bot automático")
         self.bot_toggle.setObjectName("botToggle")
 
@@ -380,6 +407,7 @@ class MainWindow(QMainWindow):
         risk_layout.addWidget(self.bot_status_label)
         risk_layout.addWidget(self.recovery_status_label)
         risk_layout.addWidget(self.power_status_label)
+        risk_layout.addWidget(self.decision_label)
         risk_layout.addWidget(self.drawdown_bar)
         risk_layout.addLayout(controls)
 
@@ -521,6 +549,11 @@ class MainWindow(QMainWindow):
                     "Esperando rango estable."
                 )
             self.bot_status_label.setText(f"Bot: {status}")
+            self.decision_label.setText(
+                "Decisión actual: " + self._decision_explanation(
+                    action, status, protected
+                )
+            )
             if (
                 action == "COMPRAR"
                 and (not protected or self.recovery.enabled)
@@ -536,13 +569,33 @@ class MainWindow(QMainWindow):
                     f"{self.account.minimum_trade_eur:,.0f} € y reserva "
                     f"{self.account.minimum_cash_eur:,.0f} €"
                 )
+                self.decision_label.setText(
+                    "Decisión actual: no compra porque el efectivo disponible "
+                    "no cubre la compra mínima manteniendo la reserva."
+                )
         else:
             self.confirmation.reset()
             self.bot_status_label.setText("Bot: desactivado")
             self.recovery_status_label.setText(
                 "Recuperación: pausada con el bot desactivado"
             )
+            self.decision_label.setText(
+                "Decisión actual: bot desactivado; solo se permiten operaciones manuales."
+            )
         self._refresh()
+
+    def _decision_explanation(
+        self, action: str, status: str, protected: bool
+    ) -> str:
+        if protected and not self.recovery.enabled:
+            return "protección por caída activa; espera que el precio se estabilice."
+        if action == "COMPRAR":
+            return "se confirmó una bajada suficiente y está comprobando los límites de compra."
+        if "baj" in status.lower() or "compra" in status.lower():
+            return "ha detectado una bajada, pero todavía espera la confirmación configurada."
+        if "sub" in status.lower() or "venta" in status.lower():
+            return "vigila la subida; cada lote se venderá al alcanzar su objetivo neto."
+        return "no existe todavía una señal válida; continúa observando nuevos precios."
 
     def _buy(self, reason: str, fraction: float) -> None:
         try:
@@ -613,6 +666,12 @@ class MainWindow(QMainWindow):
                     f"Comisiones: {result.total_fees:,.2f} €\n"
                     f"Caída máxima: {result.max_drawdown_percent:.2f} %\n"
                     f"Operaciones: {result.trades}\n\n"
+                    f"Ventas ganadoras: {result.winning_sales}\n"
+                    f"Ventas no ganadoras: {result.losing_sales}\n"
+                    f"Porcentaje de aciertos: {result.win_rate_percent:.1f} %\n"
+                    f"Rentabilidad anualizada: {result.annualized_return_percent:+.2f} %\n"
+                    f"Comprar y mantener: {result.buy_hold_return_percent:+.2f} %\n"
+                    f"Diferencia frente a mantener: {result.excess_return_percent:+.2f} %\n\n"
                     "Resultado histórico orientativo; no predice resultados futuros."
                 ),
             )
@@ -706,7 +765,7 @@ class MainWindow(QMainWindow):
             f"Caída actual {drawdown:.1%} · máxima "
             f"{self.account.max_drawdown:.1%} · límite {self.settings.max_drawdown:.1%}"
         )
-        self.chart.set_prices(self.prices)
+        self.chart.set_data(self.prices, self.account.trades)
 
     def _save(self) -> None:
         try:

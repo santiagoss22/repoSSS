@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import json
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -18,15 +19,39 @@ class BacktestResult:
     total_fees: float
     max_drawdown_percent: float
     trades: int
+    winning_sales: int
+    losing_sales: int
+    win_rate_percent: float
+    buy_hold_return_percent: float
+    excess_return_percent: float
+    annualized_return_percent: float
 
 
-def download_coinbase_daily_prices(limit: int = 300) -> list[float]:
-    query = urlencode({"granularity": "86400"})
-    url = f"https://api.exchange.coinbase.com/products/BTC-EUR/candles?{query}"
-    request = Request(url, headers={"User-Agent": "BitcoinPaperBot/1.0"})
-    with urlopen(request, timeout=15) as response:
-        candles = json.load(response)
-    ordered = sorted(candles[:limit], key=lambda candle: candle[0])
+def download_coinbase_daily_prices(limit: int = 1_095) -> list[float]:
+    """Descarga hasta tres años en bloques compatibles con Coinbase."""
+    limit = max(1, min(limit, 1_095))
+    end = datetime.now(timezone.utc)
+    candles_by_time: dict[int, list] = {}
+    while len(candles_by_time) < limit:
+        batch_days = min(300, limit - len(candles_by_time))
+        start = end - timedelta(days=batch_days)
+        query = urlencode(
+            {
+                "granularity": "86400",
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+            }
+        )
+        url = f"https://api.exchange.coinbase.com/products/BTC-EUR/candles?{query}"
+        request = Request(url, headers={"User-Agent": "BitcoinPaperBot/1.0"})
+        with urlopen(request, timeout=15) as response:
+            candles = json.load(response)
+        if not candles:
+            break
+        for candle in candles:
+            candles_by_time[int(candle[0])] = candle
+        end = start - timedelta(seconds=1)
+    ordered = sorted(candles_by_time.values(), key=lambda candle: candle[0])[-limit:]
     return [float(candle[4]) for candle in ordered]
 
 
@@ -83,12 +108,26 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
                 slippage_rate=settings.slippage_rate,
             )
     ending = account.equity(prices[-1])
+    sales = [trade for trade in account.trades if trade.side == "VENTA"]
+    winning_sales = sum(trade.pnl_eur > 0 for trade in sales)
+    losing_sales = sum(trade.pnl_eur <= 0 for trade in sales)
+    win_rate = winning_sales / len(sales) * 100 if sales else 0.0
+    buy_hold_return = (prices[-1] / prices[0] - 1) * 100
+    return_percent = (ending / account.initial_cash_eur - 1) * 100
+    years = max(len(prices) - 1, 1) / 365
+    annualized = ((ending / account.initial_cash_eur) ** (1 / years) - 1) * 100
     return BacktestResult(
         account.initial_cash_eur,
         ending,
-        (ending / account.initial_cash_eur - 1) * 100,
+        return_percent,
         account.realized_profit_eur,
         account.total_fees_eur,
         account.max_drawdown * 100,
         len(account.trades),
+        winning_sales,
+        losing_sales,
+        win_rate,
+        buy_hold_return,
+        return_percent - buy_hold_return,
+        annualized,
     )
