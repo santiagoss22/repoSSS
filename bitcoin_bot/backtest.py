@@ -112,10 +112,9 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
             )
             and account.can_buy(price, fee_rate=settings.fee_rate)
         ):
-            value = account.risk_sized_value(
-                price, settings.risk_per_trade, settings.stop_loss,
-                settings.fee_rate, settings.slippage_rate,
-            ) * technical.size_factor
+            value = account.fixed_initial_buy_value(
+                0.20, settings.fee_rate
+            )
             try:
                 account.buy(
                     price,
