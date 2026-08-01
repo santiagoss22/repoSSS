@@ -73,6 +73,8 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
         account.record_equity(price)
         if account.cooldown_remaining > 0:
             account.cooldown_remaining -= 1
+        if account.buy_cooldown_remaining > 0:
+            account.buy_cooldown_remaining -= 1
         stopped, stop_kind = account.stopped_lots(
             price,
             settings.stop_loss,
@@ -104,6 +106,7 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
         if (
             action == "COMPRAR"
             and account.cooldown_remaining == 0
+            and account.buy_cooldown_remaining == 0
             and account.can_buy(price, fee_rate=settings.fee_rate)
         ):
             value = account.risk_sized_value(
@@ -119,6 +122,7 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
                     fee_rate=settings.fee_rate,
                     slippage_rate=settings.slippage_rate,
                 )
+                account.buy_cooldown_remaining = settings.buy_spacing_ticks
             except ValueError:
                 # Una señal válida puede quedar por debajo del mínimo al rozar
                 # la reserva o la exposición máxima; el backtest continúa.
