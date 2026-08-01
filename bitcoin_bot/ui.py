@@ -306,11 +306,19 @@ class SettingsDialog(QDialog):
         self.inputs: dict[str, QDoubleSpinBox | QSpinBox] = {}
         form = QFormLayout(self)
 
-        def percentage(name: str, label: str, value: float, maximum: float = 100):
+        def percentage(
+            name: str,
+            label: str,
+            value: float,
+            maximum: float = 100,
+            allow_disabled: bool = False,
+        ):
             field = QDoubleSpinBox()
-            field.setRange(0.01, maximum)
+            field.setRange(0 if allow_disabled else 0.01, maximum)
             field.setDecimals(2)
             field.setSuffix(" %")
+            if allow_disabled:
+                field.setSpecialValueText("Sin límite")
             field.setValue(value * 100)
             form.addRow(label, field)
             self.inputs[name] = field
@@ -326,8 +334,14 @@ class SettingsDialog(QDialog):
             "trailing_distance", "Distancia del trailing",
             settings.trailing_distance, 30
         )
-        percentage("daily_loss_limit", "Límite diario", settings.daily_loss_limit, 20)
-        percentage("weekly_loss_limit", "Límite semanal", settings.weekly_loss_limit, 40)
+        percentage(
+            "daily_loss_limit", "Pérdida máxima diaria",
+            settings.daily_loss_limit, 100, allow_disabled=True
+        )
+        percentage(
+            "weekly_loss_limit", "Pérdida máxima semanal",
+            settings.weekly_loss_limit, 100, allow_disabled=True
+        )
         percentage(
             "max_position_fraction", "Exposición máxima",
             settings.max_position_fraction, 100
@@ -994,9 +1008,15 @@ class MainWindow(QMainWindow):
         week_start = day_start - timedelta(days=day_start.weekday())
         daily = self.account.realized_loss_since(day_start)
         weekly = self.account.realized_loss_since(week_start)
-        if daily >= self.account.initial_cash_eur * self.settings.daily_loss_limit:
+        if (
+            self.settings.daily_loss_limit > 0
+            and daily >= self.account.initial_cash_eur * self.settings.daily_loss_limit
+        ):
             return "límite de pérdida diaria alcanzado"
-        if weekly >= self.account.initial_cash_eur * self.settings.weekly_loss_limit:
+        if (
+            self.settings.weekly_loss_limit > 0
+            and weekly >= self.account.initial_cash_eur * self.settings.weekly_loss_limit
+        ):
             return "límite de pérdida semanal alcanzado"
         if self.account.max_drawdown >= self.settings.drawdown_halt:
             return "drawdown del 10 %; requiere revisión manual"
@@ -1302,10 +1322,16 @@ class MainWindow(QMainWindow):
         day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         daily_loss = self.account.realized_loss_since(day_start)
         daily_limit = self.account.initial_cash_eur * self.settings.daily_loss_limit
-        risk_ratio = min(daily_loss / max(daily_limit, 0.01), 1.0)
+        risk_ratio = (
+            min(daily_loss / daily_limit, 1.0)
+            if daily_limit > 0 else 0.0
+        )
         self.drawdown_bar.setValue(round(risk_ratio * 1000))
+        daily_limit_text = (
+            f"{daily_limit:,.0f} €" if daily_limit > 0 else "sin límite"
+        )
         self.drawdown_bar.setFormat(
-            f"Pérdida diaria {daily_loss:,.0f} € / límite {daily_limit:,.0f} € · "
+            f"Pérdida diaria {daily_loss:,.0f} € / {daily_limit_text} · "
             f"caída máxima histórica {self.account.max_drawdown:.1%}"
         )
         self.chart.set_data(
