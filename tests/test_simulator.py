@@ -142,6 +142,32 @@ class StrategyTests(unittest.TestCase):
         self.assertEqual(strategy.signal([10, 11, 12]), "ESPERAR")
 
 
+class StrictRiskTests(unittest.TestCase):
+    def test_position_size_limits_loss_budget(self):
+        account = PaperAccount()
+        value = account.risk_sized_value(
+            90_000, risk_rate=0.01, stop_loss=0.06,
+            fee_rate=0.006, slippage_rate=0.001,
+        )
+        self.assertAlmostEqual(value, 10_000 * 0.01 / 0.074)
+
+    def test_stop_loss_selects_losing_lot(self):
+        account = PaperAccount()
+        account.buy(90_000, 1_000, "prueba", fee_rate=0, slippage_rate=0)
+        stopped, reason = account.stopped_lots(84_500, 0.06, 0.07, 0.04)
+        self.assertEqual(len(stopped), 1)
+        self.assertEqual(reason, "Stop-loss")
+
+    def test_trailing_stop_only_moves_up(self):
+        account = PaperAccount()
+        account.buy(90_000, 1_000, "prueba", fee_rate=0, slippage_rate=0)
+        account.stopped_lots(99_000, 0.06, 0.07, 0.04)
+        self.assertAlmostEqual(account.next_stop_price(0.06, 0.07, 0.04), 95_040)
+        stopped, reason = account.stopped_lots(95_000, 0.06, 0.07, 0.04)
+        self.assertEqual(len(stopped), 1)
+        self.assertEqual(reason, "Trailing stop")
+
+
 class PriceSimulatorTests(unittest.TestCase):
     def test_seed_produces_repeatable_prices(self):
         first = PriceSimulator(seed=7)
@@ -184,6 +210,13 @@ class PersistenceTests(unittest.TestCase):
         self.assertAlmostEqual(loaded_account.bitcoin, account.bitcoin)
         self.assertEqual(len(loaded_account.trades), 1)
         self.assertEqual(loaded_settings.sell_gain, 0.03)
+
+    def test_old_settings_migrate_to_strict_risk_defaults(self):
+        settings = BotSettings.from_dict(
+            {"sell_gain": 0.025, "recovery_loss_trigger": 0.10}
+        )
+        self.assertEqual(settings.sell_gain, 0.12)
+        self.assertEqual(settings.stop_loss, 0.06)
 
 
 class BacktestTests(unittest.TestCase):

@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from bitcoin_bot.config import BotSettings
-from bitcoin_bot.simulator import PaperAccount, RecoveryController, TrendConfirmation
+from bitcoin_bot.simulator import PaperAccount, TrendConfirmation
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,7 @@ class BacktestResult:
     buy_hold_return_percent: float
     excess_return_percent: float
     annualized_return_percent: float
+    stop_exits: int
 
 
 def download_coinbase_daily_prices(limit: int = 1_095) -> list[float]:
@@ -61,27 +62,35 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
     account = PaperAccount(
         minimum_cash_eur=settings.minimum_cash_eur,
         minimum_trade_eur=settings.minimum_trade_eur,
+        max_position_fraction=settings.max_position_fraction,
     )
     confirmation = TrendConfirmation(
         confirmation_ticks=settings.confirmation_ticks,
         sell_gain=settings.sell_gain,
         reference_expiry_ticks=settings.reference_expiry_ticks,
     )
-    recovery = RecoveryController(
-        loss_trigger=settings.recovery_loss_trigger,
-        stable_ticks=settings.recovery_stable_ticks,
-        stable_range=settings.recovery_range,
-    )
     for price in prices:
-        drawdown = account.record_equity(price)
-        recovery.update(account, price)
-        include_frozen = not recovery.active
+        account.record_equity(price)
+        if account.cooldown_remaining > 0:
+            account.cooldown_remaining -= 1
+        stopped, stop_kind = account.stopped_lots(
+            price,
+            settings.stop_loss,
+            settings.trailing_activation,
+            settings.trailing_distance,
+        )
+        if stopped:
+            account.sell_selected_lots(
+                stopped, price, stop_kind,
+                settings.fee_rate, settings.slippage_rate,
+            )
+            account.cooldown_remaining = settings.cooldown_ticks
+            confirmation.reset()
         profitable = account.profitable_lots(
             price,
             settings.sell_gain,
             settings.fee_rate,
             settings.slippage_rate,
-            include_frozen=include_frozen,
         )
         if profitable:
             account.sell_profitable_lots(
@@ -90,20 +99,23 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
                 "Backtest por lotes",
                 fee_rate=settings.fee_rate,
                 slippage_rate=settings.slippage_rate,
-                include_frozen=include_frozen,
             )
             confirmation.reset()
         action, _ = confirmation.update(price, False)
         if (
             action == "COMPRAR"
-            and (drawdown < settings.max_drawdown or recovery.enabled)
+            and account.cooldown_remaining == 0
             and account.can_buy(price, fee_rate=settings.fee_rate)
         ):
+            value = account.risk_sized_value(
+                price, settings.risk_per_trade, settings.stop_loss,
+                settings.fee_rate, settings.slippage_rate,
+            )
             account.buy(
                 price,
-                account.equity(price) * settings.buy_fraction,
+                value,
                 "Backtest",
-                max_fraction=settings.buy_fraction,
+                max_fraction=settings.max_position_fraction,
                 fee_rate=settings.fee_rate,
                 slippage_rate=settings.slippage_rate,
             )
@@ -130,4 +142,5 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
         buy_hold_return,
         return_percent - buy_hold_return,
         annualized,
+        sum("stop" in trade.reason.lower() for trade in sales),
     )

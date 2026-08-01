@@ -23,6 +23,8 @@ class PositionLot:
     cost_basis_eur: float
     timestamp: datetime = field(default_factory=datetime.now)
     frozen: bool = False
+    entry_price_eur: float = 0.0
+    peak_price_eur: float = 0.0
 
 
 @dataclass
@@ -42,6 +44,7 @@ class PaperAccount:
     last_market_price_eur: float = 90_000.0
     trades: list[Trade] = field(default_factory=list)
     lots: list[PositionLot] = field(default_factory=list)
+    cooldown_remaining: int = 0
 
     def equity(self, price_eur: float) -> float:
         return self.cash_eur + self.bitcoin * price_eur
@@ -155,6 +158,20 @@ class PaperAccount:
             and position_value < self.equity(price_eur) * self.max_position_fraction
         )
 
+    def risk_sized_value(
+        self,
+        price_eur: float,
+        risk_rate: float,
+        stop_loss: float,
+        fee_rate: float = 0.0,
+        slippage_rate: float = 0.0,
+    ) -> float:
+        effective_loss = stop_loss + 2 * fee_rate + 2 * slippage_rate
+        if effective_loss <= 0:
+            return 0.0
+        risk_budget = self.equity(price_eur) * risk_rate
+        return risk_budget / effective_loss
+
     def buy(
         self,
         price_eur: float,
@@ -191,7 +208,15 @@ class PaperAccount:
         self.cash_eur -= total_cost
         self.bitcoin += amount
         self.cost_basis_eur += total_cost
-        self.lots.append(PositionLot(amount, total_cost, frozen=False))
+        self.lots.append(
+            PositionLot(
+                amount,
+                total_cost,
+                frozen=False,
+                entry_price_eur=execution_price,
+                peak_price_eur=execution_price,
+            )
+        )
         self.total_fees_eur += fee
         trade = Trade(
             datetime.now(),
@@ -259,6 +284,64 @@ class PaperAccount:
             reason,
             fee_rate,
             slippage_rate,
+        )
+
+    def sell_selected_lots(
+        self,
+        lots: list[PositionLot],
+        price_eur: float,
+        reason: str,
+        fee_rate: float = 0.0,
+        slippage_rate: float = 0.0,
+    ) -> Trade:
+        if not lots:
+            raise ValueError("No hay lotes seleccionados para vender.")
+        return self._execute_lot_sale(
+            lots, price_eur, reason, fee_rate, slippage_rate
+        )
+
+    def stopped_lots(
+        self,
+        price_eur: float,
+        stop_loss: float,
+        trailing_activation: float,
+        trailing_distance: float,
+    ) -> tuple[list[PositionLot], str]:
+        stopped: list[PositionLot] = []
+        trailing_triggered = False
+        for lot in self.lots:
+            entry = lot.entry_price_eur or lot.cost_basis_eur / lot.bitcoin
+            lot.peak_price_eur = max(lot.peak_price_eur or entry, price_eur)
+            stop = entry * (1 - stop_loss)
+            trailing_active = lot.peak_price_eur >= entry * (1 + trailing_activation)
+            if trailing_active:
+                stop = max(stop, lot.peak_price_eur * (1 - trailing_distance))
+            if price_eur <= stop:
+                stopped.append(lot)
+                trailing_triggered = trailing_triggered or trailing_active
+        return stopped, "Trailing stop" if trailing_triggered else "Stop-loss"
+
+    def next_stop_price(
+        self,
+        stop_loss: float,
+        trailing_activation: float,
+        trailing_distance: float,
+    ) -> float:
+        stops = []
+        for lot in self.lots:
+            entry = lot.entry_price_eur or lot.cost_basis_eur / lot.bitcoin
+            stop = entry * (1 - stop_loss)
+            peak = lot.peak_price_eur or entry
+            if peak >= entry * (1 + trailing_activation):
+                stop = max(stop, peak * (1 - trailing_distance))
+            stops.append(stop)
+        return max(stops) if stops else 0.0
+
+    def realized_loss_since(self, since: datetime) -> float:
+        return -sum(
+            min(trade.pnl_eur, 0.0)
+            for trade in self.trades
+            if trade.side == "VENTA" and trade.timestamp >= since
         )
 
     def _sell_lots(
