@@ -18,6 +18,20 @@ from bitcoin_bot.technical_strategy import MultiIndicatorStrategy, atr_percent, 
 
 
 class PaperAccountTests(unittest.TestCase):
+    def test_fixed_initial_twenty_percent_spends_exactly_two_thousand(self):
+        account = PaperAccount(max_position_fraction=0.80)
+        for index in range(4):
+            value = account.fixed_initial_buy_value(0.20, fee_rate=0.006)
+            trade = account.buy(
+                100_000 - index * 1_000,
+                value,
+                "compra fija",
+                max_fraction=0.80,
+                fee_rate=0.006,
+            )
+            self.assertAlmostEqual(trade.value_eur + trade.fee_eur, 2_000)
+        self.assertAlmostEqual(account.cash_eur, 2_000)
+
     def test_next_buy_requires_a_lower_price_step(self):
         account = PaperAccount()
         account.buy(100_000, 2_000, "primera")

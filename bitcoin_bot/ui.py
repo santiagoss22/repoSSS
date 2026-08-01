@@ -452,7 +452,7 @@ class MainWindow(QMainWindow):
         self.bot_toggle = QCheckBox("Bot automático")
         self.bot_toggle.setObjectName("botToggle")
 
-        self.buy_button = QPushButton("Comprar (20 %)")
+        self.buy_button = QPushButton("Comprar (20 % inicial)")
         self.buy_button.setObjectName("buyButton")
         self.buy_half_button = QPushButton("Comprar (50 %)")
         self.buy_half_button.setObjectName("buyButton")
@@ -570,7 +570,13 @@ class MainWindow(QMainWindow):
         self._load_trades()
 
         self.buy_button.clicked.connect(
-            lambda: self._buy("Compra manual", 0.20)
+            lambda: self._buy(
+                "Compra manual del 20 % inicial",
+                self.settings.max_position_fraction,
+                self.account.fixed_initial_buy_value(
+                    0.20, self.settings.fee_rate
+                ),
+            )
         )
         self.buy_half_button.clicked.connect(
             lambda: self._buy("Compra manual del 50 %", 0.50)
@@ -867,14 +873,10 @@ class MainWindow(QMainWindow):
         return ""
 
     def _buy_risk_sized(self, reason: str) -> None:
-        value = self.account.risk_sized_value(
-            self.market.price,
-            self.settings.risk_per_trade,
-            self.settings.stop_loss,
+        value = self.account.fixed_initial_buy_value(
+            0.20,
             self.settings.fee_rate,
-            self.settings.slippage_rate,
         )
-        value *= self.current_size_factor
         self._buy(
             reason,
             self.settings.max_position_fraction,

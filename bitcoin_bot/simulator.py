@@ -188,6 +188,16 @@ class PaperAccount:
         risk_budget = self.equity(price_eur) * risk_rate
         return risk_budget / effective_loss
 
+    def fixed_initial_buy_value(
+        self,
+        fraction: float,
+        fee_rate: float = 0.0,
+    ) -> float:
+        """Principal cuya salida total, incluida comisión, es fija."""
+        if not 0 < fraction <= 1:
+            raise ValueError("Porcentaje de compra no válido.")
+        return self.initial_cash_eur * fraction / (1 + fee_rate)
+
     def buy(
         self,
         price_eur: float,

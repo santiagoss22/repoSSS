@@ -21,7 +21,7 @@ class BotSettings:
     cooldown_ticks: int = 15
     buy_spacing_ticks: int = 15
     minimum_buy_price_drop: float = 0.01
-    max_position_fraction: float = 0.60
+    max_position_fraction: float = 0.80
     max_open_lots: int = 4
     max_spread: float = 0.002
 
@@ -44,5 +44,7 @@ class BotSettings:
             # Migra el objetivo anterior, demasiado lejano para la operativa
             # frecuente de esta simulación, sin pisar valores personalizados.
             values["sell_gain"] = 0.04
+        if values.get("max_position_fraction") == 0.60:
+            values["max_position_fraction"] = 0.80
         allowed = cls.__dataclass_fields__
         return cls(**{key: value for key, value in values.items() if key in allowed})
