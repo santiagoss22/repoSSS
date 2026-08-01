@@ -161,6 +161,19 @@ class PaperAccount:
             and len(self.lots) < self.max_open_lots
         )
 
+    def price_allows_next_buy(
+        self,
+        price_eur: float,
+        minimum_drop: float,
+    ) -> bool:
+        """Escalona entradas: cada lote nuevo debe comprarse más barato."""
+        if not self.lots or minimum_drop <= 0:
+            return True
+        latest_entry = self.lots[-1].entry_price_eur
+        if latest_entry <= 0:
+            latest_entry = self.lots[-1].cost_basis_eur / self.lots[-1].bitcoin
+        return price_eur <= latest_entry * (1 - minimum_drop)
+
     def risk_sized_value(
         self,
         price_eur: float,
