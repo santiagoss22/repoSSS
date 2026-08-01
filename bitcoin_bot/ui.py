@@ -376,6 +376,7 @@ class MainWindow(QMainWindow):
         self.account.minimum_cash_eur = self.settings.minimum_cash_eur
         self.account.minimum_trade_eur = self.settings.minimum_trade_eur
         self.account.max_position_fraction = self.settings.max_position_fraction
+        self.account.max_open_lots = self.settings.max_open_lots
         for lot in self.account.lots:
             lot.frozen = False
         self.market = PriceSimulator(initial_price=self.account.last_market_price_eur)
@@ -894,6 +895,7 @@ class MainWindow(QMainWindow):
             self.account.minimum_cash_eur = self.settings.minimum_cash_eur
             self.account.minimum_trade_eur = self.settings.minimum_trade_eur
             self.account.max_position_fraction = self.settings.max_position_fraction
+            self.account.max_open_lots = self.settings.max_open_lots
             self._save()
             self._refresh()
 
@@ -915,6 +917,7 @@ class MainWindow(QMainWindow):
         self.account = PaperAccount(
             minimum_cash_eur=self.settings.minimum_cash_eur,
             minimum_trade_eur=self.settings.minimum_trade_eur,
+            max_open_lots=self.settings.max_open_lots,
         )
         self.market = PriceSimulator(initial_price=90_000.0)
         self.strategy = MultiIndicatorStrategy()
@@ -1032,7 +1035,8 @@ class MainWindow(QMainWindow):
         self.risk_status_label.setText(
             f"Riesgo: stop {stop_text} · objetivo {target_text} · "
             f"riesgo/operación {self.settings.risk_per_trade:.1%} · "
-            f"cooldown {cooldown}"
+            f"cooldown {cooldown} · "
+            f"lotes {len(self.account.lots)}/{self.account.max_open_lots}"
             + (
                 f" · spread {(self.live_ask - self.live_bid) / ((self.live_ask + self.live_bid) / 2):.2%}"
                 if self.market_mode != "simulated" and self.live_bid and self.live_ask
