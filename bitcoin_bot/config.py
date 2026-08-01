@@ -12,8 +12,6 @@ class BotSettings:
     sell_gain: float = 0.12
     fee_rate: float = 0.006
     slippage_rate: float = 0.001
-    confirmation_ticks: int = 3
-    reference_expiry_ticks: int = 300
     risk_per_trade: float = 0.01
     stop_loss: float = 0.06
     trailing_activation: float = 0.07

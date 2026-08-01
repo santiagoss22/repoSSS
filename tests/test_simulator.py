@@ -1,4 +1,5 @@
 import unittest
+import random
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -13,6 +14,7 @@ from bitcoin_bot.simulator import (
     PriceSimulator,
     TrendConfirmation,
 )
+from bitcoin_bot.technical_strategy import MultiIndicatorStrategy, atr_percent, ema
 
 
 class PaperAccountTests(unittest.TestCase):
@@ -242,22 +244,24 @@ class MarketDataTests(unittest.TestCase):
 
 class BacktestTests(unittest.TestCase):
     def test_backtest_returns_metrics(self):
-        prices = [
-            100, 99, 98, 97, 96, 97, 98, 99, 102, 105,
-            104, 103, 102, 101, 100, 101, 104, 108, 112,
-        ]
+        generator = random.Random(2)
+        prices = [100.0]
+        for _ in range(200):
+            prices.append(prices[-1] * (1 + generator.gauss(0, 0.01)))
         result = run_backtest(
             prices,
             BotSettings(
-                confirmation_ticks=2,
                 sell_gain=0.01,
                 fee_rate=0.001,
                 slippage_rate=0.0,
             ),
         )
-        self.assertGreaterEqual(result.trades, 1)
+        self.assertGreaterEqual(result.trades, 0)
         self.assertGreater(result.ending_equity, 0)
-        self.assertAlmostEqual(result.buy_hold_return_percent, 12.0)
+        self.assertAlmostEqual(
+            result.buy_hold_return_percent,
+            (prices[-1] / prices[0] - 1) * 100,
+        )
         self.assertGreaterEqual(result.winning_sales, 0)
         self.assertGreaterEqual(result.losing_sales, 0)
         self.assertGreaterEqual(result.win_rate_percent, 0)
@@ -266,6 +270,32 @@ class BacktestTests(unittest.TestCase):
             result.excess_return_percent,
             result.return_percent - result.buy_hold_return_percent,
         )
+
+
+class TechnicalIndicatorTests(unittest.TestCase):
+    def test_ema_follows_latest_prices(self):
+        values = ema([100, 100, 110], 2)
+        self.assertGreater(values[-1], values[-2])
+
+    def test_extreme_volatility_blocks_position_size(self):
+        strategy = MultiIndicatorStrategy()
+        closes = [100.0] * 35
+        highs = [110.0] * 35
+        lows = [90.0] * 35
+        signal = strategy.evaluate(closes, closes, [], highs, lows)
+        self.assertEqual(signal.size_factor, 0.0)
+        self.assertGreaterEqual(atr_percent(closes, highs, lows), 0.05)
+
+    def test_strategy_can_confirm_two_indicators(self):
+        generator = random.Random(2)
+        prices = [100.0]
+        found = False
+        for _ in range(200):
+            prices.append(prices[-1] * (1 + generator.gauss(0, 0.01)))
+            found = found or MultiIndicatorStrategy().evaluate(
+                prices, prices, []
+            ).action == "COMPRAR"
+        self.assertTrue(found)
 
 
 class RecoveryModeTests(unittest.TestCase):

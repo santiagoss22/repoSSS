@@ -16,8 +16,11 @@ con dinero ficticio. No se conecta a ningún exchange y no puede mover dinero re
   90.000 € para evitar tendencias exponenciales irreales.
 - Cartera inicial de 10.000 €.
 - Compras y ventas manuales.
-- Tras tres bajadas guarda una referencia y compra al encontrar un precio inferior,
-  aunque haya oscilaciones entre medias.
+- Filtra la tendencia diaria con EMA 50/200 y busca retrocesos mediante RSI,
+  Bandas de Bollinger y mejora del MACD en velas de una hora.
+- Exige al menos dos de tres condiciones y confirmación EMA 9/21 en cinco minutos.
+- Calcula ATR para reducir la compra al 50 % con volatilidad alta y bloquearla
+  con volatilidad extrema.
 - Cada lote se vende automáticamente al alcanzar el take-profit neto configurado
   (12 % de forma predeterminada).
 - Botones de compra manual del 20 % y del 50 %.
@@ -43,8 +46,6 @@ con dinero ficticio. No se conecta a ningún exchange y no puede mover dinero re
 - Permite reiniciar con confirmación el saldo, BTC, histórico y precio simulado.
 - Mientras el bot automático está activo, evita el reposo inactivo de macOS;
   la pantalla sí puede apagarse.
-- Las referencias de compra caducan después de cinco minutos de forma
-  predeterminada para evitar bloqueos; este tiempo es configurable.
 - Panel simplificado con cuatro métricas esenciales y estado de riesgo compacto.
 - Dibuja en el gráfico los niveles de entrada, stop-loss y take-profit.
 - Cada compra mantiene su propio coste, máximo alcanzado, stop y objetivo.

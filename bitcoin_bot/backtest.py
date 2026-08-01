@@ -7,7 +7,8 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from bitcoin_bot.config import BotSettings
-from bitcoin_bot.simulator import PaperAccount, TrendConfirmation
+from bitcoin_bot.simulator import PaperAccount
+from bitcoin_bot.technical_strategy import MultiIndicatorStrategy
 
 
 @dataclass(frozen=True)
@@ -57,19 +58,17 @@ def download_coinbase_daily_prices(limit: int = 1_095) -> list[float]:
 
 
 def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
-    if len(prices) < settings.confirmation_ticks + 2:
+    if len(prices) < 35:
         raise ValueError("No hay suficientes precios para ejecutar el backtest.")
     account = PaperAccount(
         minimum_cash_eur=settings.minimum_cash_eur,
         minimum_trade_eur=settings.minimum_trade_eur,
         max_position_fraction=settings.max_position_fraction,
     )
-    confirmation = TrendConfirmation(
-        confirmation_ticks=settings.confirmation_ticks,
-        sell_gain=settings.sell_gain,
-        reference_expiry_ticks=settings.reference_expiry_ticks,
-    )
+    strategy = MultiIndicatorStrategy()
+    observed: list[float] = []
     for price in prices:
+        observed.append(price)
         account.record_equity(price)
         if account.cooldown_remaining > 0:
             account.cooldown_remaining -= 1
@@ -85,7 +84,6 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
                 settings.fee_rate, settings.slippage_rate,
             )
             account.cooldown_remaining = settings.cooldown_ticks
-            confirmation.reset()
         profitable = account.profitable_lots(
             price,
             settings.sell_gain,
@@ -100,8 +98,8 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
                 fee_rate=settings.fee_rate,
                 slippage_rate=settings.slippage_rate,
             )
-            confirmation.reset()
-        action, _ = confirmation.update(price, False)
+        technical = strategy.evaluate(observed, observed, [])
+        action = technical.action
         if (
             action == "COMPRAR"
             and account.cooldown_remaining == 0
@@ -110,15 +108,20 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
             value = account.risk_sized_value(
                 price, settings.risk_per_trade, settings.stop_loss,
                 settings.fee_rate, settings.slippage_rate,
-            )
-            account.buy(
-                price,
-                value,
-                "Backtest",
-                max_fraction=settings.max_position_fraction,
-                fee_rate=settings.fee_rate,
-                slippage_rate=settings.slippage_rate,
-            )
+            ) * technical.size_factor
+            try:
+                account.buy(
+                    price,
+                    value,
+                    "Backtest",
+                    max_fraction=settings.max_position_fraction,
+                    fee_rate=settings.fee_rate,
+                    slippage_rate=settings.slippage_rate,
+                )
+            except ValueError:
+                # Una señal válida puede quedar por debajo del mínimo al rozar
+                # la reserva o la exposición máxima; el backtest continúa.
+                pass
     ending = account.equity(prices[-1])
     sales = [trade for trade in account.trades if trade.side == "VENTA"]
     winning_sales = sum(trade.pnl_eur > 0 for trade in sales)
