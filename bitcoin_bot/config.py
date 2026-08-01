@@ -20,7 +20,7 @@ class BotSettings:
     weekly_loss_limit: float = 0.04
     cooldown_ticks: int = 15
     buy_spacing_ticks: int = 15
-    minimum_buy_price_drop: float = 0.01
+    minimum_buy_price_drop: float = 0.012
     max_position_fraction: float = 0.80
     max_open_lots: int = 4
     max_spread: float = 0.002
@@ -31,11 +31,11 @@ class BotSettings:
     @classmethod
     def from_dict(cls, values: dict) -> "BotSettings":
         values = dict(values)
-        if values.get("minimum_buy_price_drop", 0) < 0.01:
+        if values.get("minimum_buy_price_drop", 0) < 0.012:
             # La versión anterior solo esperaba tres segundos y podía agrupar
             # varias entradas casi al mismo precio.
             values["buy_spacing_ticks"] = 15
-            values["minimum_buy_price_drop"] = 0.01
+            values["minimum_buy_price_drop"] = 0.012
         if "risk_management_version" not in values:
             # Migra la estrategia antigua de recuperación a los nuevos
             # valores seguros, conservando comisiones y preferencias generales.
