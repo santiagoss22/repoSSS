@@ -111,7 +111,9 @@ class PriceChart(QWidget):
         risk_levels: tuple[float, float] = (0.0, 0.0),
     ) -> None:
         self.prices = prices[-120:]
-        self.trades = trades[-40:]
+        # Las compras se dibujan desde los lotes abiertos, no desde el historial.
+        # Así desaparecen del gráfico en cuanto se vende el lote correspondiente.
+        self.trades = [trade for trade in trades if trade.side == "VENTA"][-40:]
         self.purchase_levels = [
             (lot.cost_basis_eur / lot.bitcoin, lot.frozen)
             for lot in lots
@@ -178,6 +180,27 @@ class PriceChart(QWidget):
             painter.setPen(QPen(color, 1))
             label = "C" if trade.side == "COMPRA" else "V"
             painter.drawText(int(x) + 7, int(y) - 7, label)
+        self._draw_active_purchase_points(painter, points)
+
+    def _draw_active_purchase_points(
+        self, painter: QPainter, points: list[tuple[float, float]]
+    ) -> None:
+        used: set[int] = set()
+        for level, _ in self.purchase_levels:
+            index = min(
+                range(len(self.prices)),
+                key=lambda item: abs(self.prices[item] - level),
+            )
+            if index in used:
+                continue
+            used.add(index)
+            x, y = points[index]
+            color = QColor("#22c55e")
+            painter.setBrush(color)
+            painter.setPen(QPen(QColor("#f8fafc"), 1))
+            painter.drawEllipse(int(x) - 5, int(y) - 5, 10, 10)
+            painter.setPen(QPen(color, 1))
+            painter.drawText(int(x) + 7, int(y) - 7, "C")
 
     def _draw_purchase_levels(
         self, painter: QPainter, low: float, high: float, height: float, left: int
