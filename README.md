@@ -12,40 +12,38 @@ con dinero ficticio. No se conecta a ningún exchange y no puede mover dinero re
 - Compras y ventas manuales.
 - Tras tres bajadas guarda una referencia y compra al encontrar un precio inferior,
   aunque haya oscilaciones entre medias.
-- Cada lote se vende automáticamente al alcanzar un beneficio neto del 2,5 %.
+- Cada lote se vende automáticamente al alcanzar el take-profit neto configurado
+  (12 % de forma predeterminada).
 - Botones de compra manual del 20 % y del 50 %.
-- Límite normal del 20 % por compra.
+- El tamaño automático se calcula para arriesgar como máximo el 1 % del patrimonio.
 - Puede efectuar compras sucesivas sin esperar a vender.
 - Conserva siempre un mínimo de 2.000 € en efectivo.
 - No realiza compras inferiores a 500 €; con 2.200 € de efectivo, por ejemplo,
   no compra porque solo quedarían 200 € disponibles sobre la reserva.
-- Exposición máxima del 80 % de la cartera.
+- Exposición máxima predeterminada del 60 % de la cartera.
 - Calcula el coste medio real de las compras.
 - Simula comisiones y deslizamiento tanto al comprar como al vender.
 - El objetivo de venta se calcula después de esos costes.
-- Muestra beneficio realizado y pendiente, comisiones y caída máxima.
-- Pausa nuevas compras cuando alcanza el límite de caída configurado.
+- Stop-loss del 6 % por lote y trailing stop del 4 % cuando la ganancia alcanza 7 %.
+- Cooldown de 15 ciclos después de una salida por pérdida.
+- Pausa automática al perder un 2 % diario o un 4 % semanal.
 - Guarda automáticamente la cartera, el historial y la configuración.
 - Permite cambiar porcentajes, ciclos, costes, reserva y protección desde la app.
 - Ejecuta backtests sobre hasta tres años de velas diarias públicas BTC-EUR de Coinbase.
 - Compara la estrategia con comprar y mantener, y muestra aciertos y rentabilidad anualizada.
 - Marca compras y ventas directamente sobre el gráfico de precios.
+- Mantiene en el lateral el precio de cada lote abierto y su diferencia porcentual.
 - Explica por qué el bot compra, espera o bloquea una operación.
 - Permite reiniciar con confirmación el saldo, BTC, histórico y precio simulado.
 - Mientras el bot automático está activo, evita el reposo inactivo de macOS;
   la pantalla sí puede apagarse.
 - Las referencias de compra caducan después de cinco minutos de forma
   predeterminada para evitar bloqueos; este tiempo es configurable.
-- Panel visual con tarjetas de métricas, pestañas, gráfico sombreado, indicador
-  de riesgo y estados diferenciados por color.
-- Si una posición cae más del 10 %, sus lotes existentes quedan congelados.
-- Tras 15 ciclos dentro de un rango máximo del 1 %, el bot puede crear lotes
-  nuevos de recuperación y operar solo con ellos; los lotes antiguos no se
-  venden. Los tres valores son configurables.
-- Cada compra mantiene su propio coste y objetivo neto del 2,5 %.
-- Las ventas automáticas no esperan ciclos de subida: en cada actualización se
-  venden únicamente los lotes que ya alcanzaron su objetivo, manteniendo
-  abiertos los lotes más caros o congelados.
+- Panel simplificado con cuatro métricas esenciales y estado de riesgo compacto.
+- Dibuja en el gráfico los niveles de entrada, stop-loss y take-profit.
+- Cada compra mantiene su propio coste, máximo alcanzado, stop y objetivo.
+- Las ventas automáticas no esperan ciclos de subida: cada actualización comprueba
+  take-profit, stop-loss y trailing stop por lote.
 
 El histórico de Coinbase puede contener intervalos sin datos y un backtest no
 predice resultados futuros.

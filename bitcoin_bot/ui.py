@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from pathlib import Path
 import os
 import subprocess
@@ -37,7 +38,6 @@ from bitcoin_bot.simulator import (
     MovingAverageStrategy,
     PaperAccount,
     PriceSimulator,
-    RecoveryController,
     TrendConfirmation,
 )
 
@@ -100,11 +100,22 @@ class PriceChart(QWidget):
         super().__init__()
         self.prices: list[float] = []
         self.trades = []
+        self.purchase_levels: list[tuple[float, bool]] = []
+        self.risk_levels: tuple[float, float] = (0.0, 0.0)
         self.setMinimumHeight(210)
 
-    def set_data(self, prices: list[float], trades: list) -> None:
+    def set_data(
+        self, prices: list[float], trades: list, lots: list,
+        risk_levels: tuple[float, float] = (0.0, 0.0),
+    ) -> None:
         self.prices = prices[-120:]
         self.trades = trades[-40:]
+        self.purchase_levels = [
+            (lot.cost_basis_eur / lot.bitcoin, lot.frozen)
+            for lot in lots
+            if lot.bitcoin > 0
+        ][-8:]
+        self.risk_levels = risk_levels
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -119,10 +130,12 @@ class PriceChart(QWidget):
             return
         low, high = min(self.prices), max(self.prices)
         spread = max(high - low, 1.0)
-        width, height = max(self.width() - 24, 1), max(self.height() - 24, 1)
+        left, right = 132, 12
+        width = max(self.width() - left - right, 1)
+        height = max(self.height() - 24, 1)
         points = [
             (
-                12 + index * width / (len(self.prices) - 1),
+                left + index * width / (len(self.prices) - 1),
                 12 + (high - price) * height / spread,
             )
             for index, price in enumerate(self.prices)
@@ -141,6 +154,8 @@ class PriceChart(QWidget):
         painter.fillPath(area, gradient)
         painter.setPen(QPen(QColor("#f59e0b"), 2))
         painter.drawPath(path)
+        self._draw_purchase_levels(painter, low, high, height, left)
+        self._draw_risk_levels(painter, low, high, height, left)
         # Sitúa cada operación en el punto visible cuyo precio más se aproxima
         # al precio ejecutado. Esto mantiene el gráfico útil tras reiniciar.
         used: set[tuple[int, str]] = set()
@@ -162,6 +177,48 @@ class PriceChart(QWidget):
             label = "C" if trade.side == "COMPRA" else "V"
             painter.drawText(int(x) + 7, int(y) - 7, label)
 
+    def _draw_purchase_levels(
+        self, painter: QPainter, low: float, high: float, height: float, left: int
+    ) -> None:
+        if not self.purchase_levels:
+            return
+        spread = max(high - low, 1.0)
+        current = self.prices[-1]
+        occupied: list[float] = []
+        for level, frozen in self.purchase_levels:
+            raw_y = 12 + (high - level) * height / spread
+            y = min(max(raw_y, 14), self.height() - 14)
+            while any(abs(y - previous) < 17 for previous in occupied):
+                y = min(y + 17, self.height() - 14)
+            occupied.append(y)
+            difference = (current / level - 1) * 100
+            arrow = "↑" if raw_y < 14 else "↓" if raw_y > self.height() - 14 else ""
+            color = QColor("#14b8a6" if frozen else "#22c55e")
+            painter.setPen(QPen(color, 1, Qt.DashLine))
+            painter.drawLine(left - 10, int(y), self.width() - 12, int(y))
+            painter.setPen(QPen(color, 1))
+            state = "◆" if frozen else "C"
+            text = f"{arrow}{state} {level:,.0f} €  {difference:+.1f}%"
+            painter.drawText(8, int(y) + 4, text)
+
+    def _draw_risk_levels(
+        self, painter: QPainter, low: float, high: float, height: float, left: int
+    ) -> None:
+        spread = max(high - low, 1.0)
+        for level, label, color_name in (
+            (self.risk_levels[0], "STOP", "#ef4444"),
+            (self.risk_levels[1], "OBJ", "#a78bfa"),
+        ):
+            if level <= 0:
+                continue
+            raw_y = 12 + (high - level) * height / spread
+            y = min(max(raw_y, 14), self.height() - 14)
+            color = QColor(color_name)
+            painter.setPen(QPen(color, 1, Qt.DotLine))
+            painter.drawLine(left, int(y), self.width() - 12, int(y))
+            painter.setPen(QPen(color, 1))
+            painter.drawText(self.width() - 112, int(y) - 4, f"{label} {level:,.0f} €")
+
 
 class SettingsDialog(QDialog):
     def __init__(self, settings: BotSettings, parent=None) -> None:
@@ -179,13 +236,23 @@ class SettingsDialog(QDialog):
             form.addRow(label, field)
             self.inputs[name] = field
 
+        percentage("risk_per_trade", "Riesgo por operación", settings.risk_per_trade, 5)
+        percentage("stop_loss", "Stop-loss", settings.stop_loss, 30)
+        percentage("sell_gain", "Take-profit", settings.sell_gain, 50)
         percentage(
-            "buy_fraction",
-            "Compra automática",
-            settings.buy_fraction,
-            maximum=80,
+            "trailing_activation", "Activar trailing desde",
+            settings.trailing_activation, 50
         )
-        percentage("sell_gain", "Objetivo de beneficio", settings.sell_gain)
+        percentage(
+            "trailing_distance", "Distancia del trailing",
+            settings.trailing_distance, 30
+        )
+        percentage("daily_loss_limit", "Límite diario", settings.daily_loss_limit, 20)
+        percentage("weekly_loss_limit", "Límite semanal", settings.weekly_loss_limit, 40)
+        percentage(
+            "max_position_fraction", "Exposición máxima",
+            settings.max_position_fraction, 100
+        )
         percentage(
             "fee_rate",
             "Comisión por operación",
@@ -198,7 +265,6 @@ class SettingsDialog(QDialog):
             settings.slippage_rate,
             maximum=10,
         )
-        percentage("max_drawdown", "Pausa por caída máxima", settings.max_drawdown)
 
         reserve = QDoubleSpinBox()
         reserve.setRange(0, 1_000_000)
@@ -227,23 +293,11 @@ class SettingsDialog(QDialog):
         form.addRow("Caducidad de referencia", expiry)
         self.inputs["reference_expiry_ticks"] = expiry
 
-        percentage(
-            "recovery_loss_trigger",
-            "Activar recuperación con pérdida",
-            settings.recovery_loss_trigger,
-            maximum=50,
-        )
-        percentage(
-            "recovery_range",
-            "Rango máximo estable",
-            settings.recovery_range,
-            maximum=10,
-        )
-        stable_ticks = QSpinBox()
-        stable_ticks.setRange(5, 120)
-        stable_ticks.setValue(settings.recovery_stable_ticks)
-        form.addRow("Ciclos para estabilización", stable_ticks)
-        self.inputs["recovery_stable_ticks"] = stable_ticks
+        cooldown = QSpinBox()
+        cooldown.setRange(0, 600)
+        cooldown.setValue(settings.cooldown_ticks)
+        form.addRow("Cooldown tras pérdida (ciclos)", cooldown)
+        self.inputs["cooldown_ticks"] = cooldown
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.Save | QDialogButtonBox.Cancel
@@ -253,11 +307,15 @@ class SettingsDialog(QDialog):
         form.addRow(buttons)
 
     def apply_to(self, settings: BotSettings) -> None:
-        settings.buy_fraction = self.inputs["buy_fraction"].value() / 100
         settings.sell_gain = self.inputs["sell_gain"].value() / 100
         settings.fee_rate = self.inputs["fee_rate"].value() / 100
         settings.slippage_rate = self.inputs["slippage_rate"].value() / 100
-        settings.max_drawdown = self.inputs["max_drawdown"].value() / 100
+        for name in (
+            "risk_per_trade", "stop_loss", "trailing_activation",
+            "trailing_distance", "daily_loss_limit", "weekly_loss_limit",
+            "max_position_fraction",
+        ):
+            setattr(settings, name, self.inputs[name].value() / 100)
         settings.minimum_cash_eur = self.inputs["minimum_cash_eur"].value()
         settings.minimum_trade_eur = self.inputs["minimum_trade_eur"].value()
         settings.confirmation_ticks = int(
@@ -266,13 +324,7 @@ class SettingsDialog(QDialog):
         settings.reference_expiry_ticks = int(
             self.inputs["reference_expiry_ticks"].value()
         )
-        settings.recovery_loss_trigger = (
-            self.inputs["recovery_loss_trigger"].value() / 100
-        )
-        settings.recovery_range = self.inputs["recovery_range"].value() / 100
-        settings.recovery_stable_ticks = int(
-            self.inputs["recovery_stable_ticks"].value()
-        )
+        settings.cooldown_ticks = int(self.inputs["cooldown_ticks"].value())
 
 
 class MainWindow(QMainWindow):
@@ -297,10 +349,12 @@ class MainWindow(QMainWindow):
 
         self.account.minimum_cash_eur = self.settings.minimum_cash_eur
         self.account.minimum_trade_eur = self.settings.minimum_trade_eur
+        self.account.max_position_fraction = self.settings.max_position_fraction
+        for lot in self.account.lots:
+            lot.frozen = False
         self.market = PriceSimulator(initial_price=self.account.last_market_price_eur)
         self.strategy = MovingAverageStrategy()
         self.confirmation = self._new_confirmation()
-        self.recovery = self._new_recovery()
         self.keep_awake = KeepAwakeManager()
         self.prices = [self.market.price]
 
@@ -317,8 +371,8 @@ class MainWindow(QMainWindow):
         self.signal_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.bot_status_label = QLabel("Bot: esperando tendencia")
         self.bot_status_label.setObjectName("botStatus")
-        self.recovery_status_label = QLabel("Recuperación: modo normal")
-        self.recovery_status_label.setObjectName("recoveryStatus")
+        self.risk_status_label = QLabel("Riesgo: sin posiciones abiertas")
+        self.risk_status_label.setObjectName("riskStatus")
         self.power_status_label = QLabel(
             "Energía: comportamiento normal del Mac"
         )
@@ -351,10 +405,6 @@ class MainWindow(QMainWindow):
             "bitcoin": MetricCard("Posición Bitcoin", "#fbbf24"),
             "equity": MetricCard("Patrimonio total", "#a78bfa"),
             "profit": MetricCard("Resultado total", "#34d399"),
-            "average": MetricCard("Coste medio", "#cbd5e1"),
-            "target": MetricCard("Objetivo neto", "#fb923c"),
-            "realized": MetricCard("Beneficio realizado", "#4ade80"),
-            "fees": MetricCard("Comisiones", "#f87171"),
         }
         self.table = QTableWidget(0, 7)
         self.table.setAlternatingRowColors(True)
@@ -408,7 +458,7 @@ class MainWindow(QMainWindow):
         risk_title.setObjectName("sectionTitle")
         risk_layout.addWidget(risk_title)
         risk_layout.addWidget(self.bot_status_label)
-        risk_layout.addWidget(self.recovery_status_label)
+        risk_layout.addWidget(self.risk_status_label)
         risk_layout.addWidget(self.power_status_label)
         risk_layout.addWidget(self.decision_label)
         risk_layout.addWidget(self.drawdown_bar)
@@ -450,7 +500,7 @@ class MainWindow(QMainWindow):
         self._load_trades()
 
         self.buy_button.clicked.connect(
-            lambda: self._buy("Compra manual", self.settings.buy_fraction)
+            lambda: self._buy("Compra manual", 0.20)
         )
         self.buy_half_button.clicked.connect(
             lambda: self._buy("Compra manual del 50 %", 0.50)
@@ -490,13 +540,6 @@ class MainWindow(QMainWindow):
             reference_expiry_ticks=self.settings.reference_expiry_ticks,
         )
 
-    def _new_recovery(self) -> RecoveryController:
-        return RecoveryController(
-            loss_trigger=self.settings.recovery_loss_trigger,
-            stable_ticks=self.settings.recovery_stable_ticks,
-            stable_range=self.settings.recovery_range,
-        )
-
     def _tick(self) -> None:
         self.prices.append(self.market.tick())
         signal = self.strategy.signal(self.prices)
@@ -509,22 +552,42 @@ class MainWindow(QMainWindow):
         self.signal_label.setStyleSheet(
             f"color: {signal_colors.get(signal, '#94a3b8')};"
         )
-        drawdown = self.account.record_equity(self.market.price)
-        protected = drawdown >= self.settings.max_drawdown
+        self.account.record_equity(self.market.price)
         if self.bot_toggle.isChecked():
-            recovery_status = self.recovery.update(
-                self.account, self.market.price
+            if self.account.cooldown_remaining > 0:
+                self.account.cooldown_remaining -= 1
+
+            stopped, stop_kind = self.account.stopped_lots(
+                self.market.price,
+                self.settings.stop_loss,
+                self.settings.trailing_activation,
+                self.settings.trailing_distance,
             )
-            self.recovery_status_label.setText(
-                f"Recuperación: {recovery_status}"
-            )
-            include_frozen = not self.recovery.active
+            if stopped:
+                self.account.sell_selected_lots(
+                    stopped,
+                    self.market.price,
+                    f"{stop_kind} ({len(stopped)} lote/s)",
+                    self.settings.fee_rate,
+                    self.settings.slippage_rate,
+                )
+                self.account.cooldown_remaining = self.settings.cooldown_ticks
+                self._append_trade()
+                self.confirmation.reset()
+                self.bot_status_label.setText(f"Bot: {stop_kind} ejecutado")
+                self.decision_label.setText(
+                    f"Decisión actual: venta de protección; cooldown de "
+                    f"{self.settings.cooldown_ticks} ciclos."
+                )
+                self._save()
+                self._refresh()
+                return
+
             profitable = self.account.profitable_lots(
                 self.market.price,
                 self.settings.sell_gain,
                 self.settings.fee_rate,
                 self.settings.slippage_rate,
-                include_frozen=include_frozen,
             )
             if profitable:
                 self.account.sell_profitable_lots(
@@ -533,7 +596,6 @@ class MainWindow(QMainWindow):
                     f"Objetivo individual alcanzado ({len(profitable)} lote/s)",
                     fee_rate=self.settings.fee_rate,
                     slippage_rate=self.settings.slippage_rate,
-                    include_frozen=include_frozen,
                 )
                 self._append_trade()
                 self._save()
@@ -547,52 +609,40 @@ class MainWindow(QMainWindow):
                 self.market.price,
                 False,
             )
-            if protected and not self.recovery.enabled:
-                status = (
-                    f"Protección activada: caída {drawdown:.1%}. "
-                    "Esperando rango estable."
-                )
+            pause_reason = self._risk_pause_reason()
             self.bot_status_label.setText(f"Bot: {status}")
             self.decision_label.setText(
-                "Decisión actual: " + self._decision_explanation(
-                    action, status, protected
-                )
+                "Decisión actual: " + self._decision_explanation(action, status)
             )
             if (
                 action == "COMPRAR"
-                and (not protected or self.recovery.enabled)
+                and not pause_reason
+                and self.account.cooldown_remaining == 0
                 and self.account.can_buy(
                     self.market.price,
                     fee_rate=self.settings.fee_rate,
                 )
             ):
-                self._buy("Precio bajo referencia", self.settings.buy_fraction)
+                self._buy_risk_sized("Precio bajo referencia")
             elif action == "COMPRAR":
-                self.bot_status_label.setText(
-                    f"Bot: compra omitida · mínimo "
-                    f"{self.account.minimum_trade_eur:,.0f} € y reserva "
-                    f"{self.account.minimum_cash_eur:,.0f} €"
+                reason = pause_reason or (
+                    f"cooldown: quedan {self.account.cooldown_remaining} ciclos"
+                    if self.account.cooldown_remaining else
+                    "no alcanza la compra mínima manteniendo la reserva"
                 )
+                self.bot_status_label.setText(f"Bot: compra pausada · {reason}")
                 self.decision_label.setText(
-                    "Decisión actual: no compra porque el efectivo disponible "
-                    "no cubre la compra mínima manteniendo la reserva."
+                    f"Decisión actual: no compra por {reason}."
                 )
         else:
             self.confirmation.reset()
             self.bot_status_label.setText("Bot: desactivado")
-            self.recovery_status_label.setText(
-                "Recuperación: pausada con el bot desactivado"
-            )
             self.decision_label.setText(
                 "Decisión actual: bot desactivado; solo se permiten operaciones manuales."
             )
         self._refresh()
 
-    def _decision_explanation(
-        self, action: str, status: str, protected: bool
-    ) -> str:
-        if protected and not self.recovery.enabled:
-            return "protección por caída activa; espera que el precio se estabilice."
+    def _decision_explanation(self, action: str, status: str) -> str:
         if action == "COMPRAR":
             return "se confirmó una bajada suficiente y está comprobando los límites de compra."
         if "baj" in status.lower() or "compra" in status.lower():
@@ -601,11 +651,38 @@ class MainWindow(QMainWindow):
             return "vigila la subida; cada lote se venderá al alcanzar su objetivo neto."
         return "no existe todavía una señal válida; continúa observando nuevos precios."
 
-    def _buy(self, reason: str, fraction: float) -> None:
+    def _risk_pause_reason(self) -> str:
+        now = datetime.now()
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = day_start - timedelta(days=day_start.weekday())
+        daily = self.account.realized_loss_since(day_start)
+        weekly = self.account.realized_loss_since(week_start)
+        if daily >= self.account.initial_cash_eur * self.settings.daily_loss_limit:
+            return "límite de pérdida diaria alcanzado"
+        if weekly >= self.account.initial_cash_eur * self.settings.weekly_loss_limit:
+            return "límite de pérdida semanal alcanzado"
+        return ""
+
+    def _buy_risk_sized(self, reason: str) -> None:
+        value = self.account.risk_sized_value(
+            self.market.price,
+            self.settings.risk_per_trade,
+            self.settings.stop_loss,
+            self.settings.fee_rate,
+            self.settings.slippage_rate,
+        )
+        self._buy(reason, self.settings.max_position_fraction, value)
+
+    def _buy(
+        self, reason: str, fraction: float, requested_value: float | None = None
+    ) -> None:
         try:
             self.account.minimum_cash_eur = self.settings.minimum_cash_eur
             self.account.minimum_trade_eur = self.settings.minimum_trade_eur
-            requested = self.account.equity(self.market.price) * fraction
+            requested = (
+                self.account.equity(self.market.price) * fraction
+                if requested_value is None else requested_value
+            )
             self.account.buy(
                 self.market.price,
                 requested,
@@ -622,12 +699,7 @@ class MainWindow(QMainWindow):
 
     def _sell(self, reason: str) -> None:
         try:
-            sell_method = (
-                self.account.sell_tradable
-                if self.recovery.active
-                else self.account.sell_all
-            )
-            sell_method(
+            self.account.sell_all(
                 self.market.price,
                 reason,
                 fee_rate=self.settings.fee_rate,
@@ -644,11 +716,9 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.Accepted:
             dialog.apply_to(self.settings)
             self.account.minimum_cash_eur = self.settings.minimum_cash_eur
+            self.account.minimum_trade_eur = self.settings.minimum_trade_eur
+            self.account.max_position_fraction = self.settings.max_position_fraction
             self.confirmation = self._new_confirmation()
-            self.recovery = self._new_recovery()
-            self.buy_button.setText(
-                f"Comprar ({self.settings.buy_fraction:.0%})"
-            )
             self._save()
             self._refresh()
 
@@ -674,13 +744,12 @@ class MainWindow(QMainWindow):
         self.market = PriceSimulator(initial_price=90_000.0)
         self.strategy = MovingAverageStrategy()
         self.confirmation = self._new_confirmation()
-        self.recovery = self._new_recovery()
         self.prices = [self.market.price]
         self.table.setRowCount(0)
         self.signal_label.setText("● ESPERAR")
         self.signal_label.setStyleSheet("color: #94a3b8;")
         self.bot_status_label.setText("Bot: esperando tendencia")
-        self.recovery_status_label.setText("Recuperación: modo normal")
+        self.risk_status_label.setText("Riesgo: sin posiciones abiertas")
         self.decision_label.setText(
             "Decisión actual: simulación reiniciada; esperando nuevos precios."
         )
@@ -705,6 +774,7 @@ class MainWindow(QMainWindow):
                     f"Comisiones: {result.total_fees:,.2f} €\n"
                     f"Caída máxima: {result.max_drawdown_percent:.2f} %\n"
                     f"Operaciones: {result.trades}\n\n"
+                    f"Salidas por stop: {result.stop_exits}\n"
                     f"Ventas ganadoras: {result.winning_sales}\n"
                     f"Ventas no ganadoras: {result.losing_sales}\n"
                     f"Porcentaje de aciertos: {result.win_rate_percent:.1f} %\n"
@@ -750,13 +820,16 @@ class MainWindow(QMainWindow):
         price = self.market.price
         equity = self.account.equity(price)
         total_profit = equity - self.account.initial_cash_eur
-        unrealized = self.account.unrealized_profit(price)
-        drawdown = self.account.record_equity(price)
+        self.account.record_equity(price)
         target = self.account.next_lot_target_price(
             self.settings.sell_gain,
             self.settings.fee_rate,
             self.settings.slippage_rate,
-            include_frozen=not self.recovery.active,
+        )
+        stop = self.account.next_stop_price(
+            self.settings.stop_loss,
+            self.settings.trailing_activation,
+            self.settings.trailing_distance,
         )
         self.price_label.setText(f"BTC  {price:,.2f} €")
         target_text = f"{target:,.2f} €" if target else "—"
@@ -769,10 +842,7 @@ class MainWindow(QMainWindow):
         )
         self.cards["bitcoin"].set_value(
             f"{self.account.bitcoin:.6f} BTC",
-            (
-                f"Congelado: {self.account.frozen_bitcoin:.6f} · "
-                f"operable: {self.account.tradable_bitcoin:.6f}"
-            ),
+            f"Coste medio: {self.account.average_cost_eur:,.0f} €",
         )
         self.cards["equity"].set_value(
             f"{equity:,.2f} €",
@@ -782,29 +852,31 @@ class MainWindow(QMainWindow):
             f"{total_profit:+,.2f} €",
             f"{total_profit / self.account.initial_cash_eur:+.2%}",
         )
-        self.cards["average"].set_value(
-            f"{self.account.average_cost_eur:,.2f} €",
-            f"No realizado: {unrealized:+,.2f} €",
+        pause = self._risk_pause_reason()
+        cooldown = self.account.cooldown_remaining
+        stop_text = f"{stop:,.0f} €" if stop else "—"
+        self.risk_status_label.setText(
+            f"Riesgo: stop {stop_text} · objetivo {target_text} · "
+            f"riesgo/operación {self.settings.risk_per_trade:.1%} · "
+            f"cooldown {cooldown}"
+            + (f" · PAUSADO: {pause}" if pause else "")
         )
-        self.cards["target"].set_value(
-            target_text,
-            f"Beneficio neto: +{self.settings.sell_gain:.1%}",
-        )
-        self.cards["realized"].set_value(
-            f"{self.account.realized_profit_eur:+,.2f} €",
-            f"{sum(1 for trade in self.account.trades if trade.side == 'VENTA')} ventas",
-        )
-        self.cards["fees"].set_value(
-            f"{self.account.total_fees_eur:,.2f} €",
-            f"Actual: {self.settings.fee_rate:.2%} por operación",
-        )
-        risk_ratio = min(drawdown / max(self.settings.max_drawdown, 0.0001), 1.0)
+        now = datetime.now()
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        daily_loss = self.account.realized_loss_since(day_start)
+        daily_limit = self.account.initial_cash_eur * self.settings.daily_loss_limit
+        risk_ratio = min(daily_loss / max(daily_limit, 0.01), 1.0)
         self.drawdown_bar.setValue(round(risk_ratio * 1000))
         self.drawdown_bar.setFormat(
-            f"Caída actual {drawdown:.1%} · máxima "
-            f"{self.account.max_drawdown:.1%} · límite {self.settings.max_drawdown:.1%}"
+            f"Pérdida diaria {daily_loss:,.0f} € / límite {daily_limit:,.0f} € · "
+            f"caída máxima histórica {self.account.max_drawdown:.1%}"
         )
-        self.chart.set_data(self.prices, self.account.trades)
+        self.chart.set_data(
+            self.prices,
+            self.account.trades,
+            self.account.lots,
+            (stop, target),
+        )
 
     def _save(self) -> None:
         try:
@@ -846,13 +918,15 @@ class MainWindow(QMainWindow):
             QLabel#cardTitle { color: #64748b; font-size: 10px; font-weight: 800; }
             QLabel#cardValue { font-size: 19px; font-weight: 900; }
             QLabel#cardDetail { color: #94a3b8; font-size: 11px; }
-            QLabel#botStatus, QLabel#recoveryStatus, QLabel#powerStatus {
+            QLabel#botStatus, QLabel#riskStatus, QLabel#powerStatus,
+            QLabel#decisionStatus {
                 background: #172033; border: 1px solid #26344d;
                 border-radius: 8px; padding: 9px; font-size: 12px;
             }
             QLabel#botStatus { color: #93c5fd; }
-            QLabel#recoveryStatus { color: #fbbf24; }
+            QLabel#riskStatus { color: #fbbf24; }
             QLabel#powerStatus { color: #86efac; }
+            QLabel#decisionStatus { color: #cbd5e1; }
             QPushButton {
                 background: #334155; border: none; border-radius: 9px;
                 color: white; font-weight: 700; padding: 10px 15px;
