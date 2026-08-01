@@ -94,11 +94,10 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
             settings.trailing_distance,
         )
         if stopped:
-            trade = account.sell_selected_lots(
+            account.sell_selected_lots(
                 stopped, price, stop_kind,
                 settings.fee_rate, settings.slippage_rate,
             )
-            account.record_sale_result(trade.pnl_eur)
             account.cooldown_remaining = settings.cooldown_ticks
             account.register_sale(price, settings.post_sale_cooldown_ticks)
             continue
@@ -116,11 +115,10 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
                 and price < (lot.entry_price_eur or lot.cost_basis_eur / lot.bitcoin)
             )
         if defensive:
-            trade = account.sell_selected_lots(
+            account.sell_selected_lots(
                 defensive, price, "Venta defensiva",
                 settings.fee_rate, settings.slippage_rate,
             )
-            account.record_sale_result(trade.pnl_eur)
             account.register_sale(price, settings.post_sale_cooldown_ticks)
             continue
         profitable = account.profitable_lots(
@@ -130,14 +128,13 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
             settings.slippage_rate,
         )
         if profitable:
-            trade = account.sell_profitable_lots(
+            account.sell_profitable_lots(
                 price,
                 settings.sell_gain,
                 "Backtest por lotes",
                 fee_rate=settings.fee_rate,
                 slippage_rate=settings.slippage_rate,
             )
-            account.record_sale_result(trade.pnl_eur)
             account.register_sale(price, settings.post_sale_cooldown_ticks)
             continue
         action = technical.action
@@ -153,11 +150,11 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
             and account.buy_cooldown_remaining == 0
             and entry_confirmed
             and reentry_allowed
-            and account.consecutive_losses < settings.max_consecutive_losses
-            and account.max_drawdown < settings.max_drawdown_limit
             and account.can_buy(price, fee_rate=settings.fee_rate)
         ):
-            value = account.all_available_buy_value(settings.fee_rate)
+            value = account.fixed_initial_buy_value(
+                0.20, settings.fee_rate
+            )
             try:
                 account.buy(
                     price,

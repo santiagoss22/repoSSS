@@ -33,8 +33,8 @@ class PaperAccount:
     cash_eur: float = 10_000.0
     bitcoin: float = 0.0
     max_buy_fraction: float = 0.20
-    max_position_fraction: float = 1.0
-    max_open_lots: int = 1
+    max_position_fraction: float = 0.80
+    max_open_lots: int = 4
     minimum_cash_eur: float = 2_000.0
     minimum_trade_eur: float = 500.0
     cost_basis_eur: float = 0.0
@@ -55,7 +55,6 @@ class PaperAccount:
     floor_prices: list[float] = field(default_factory=list)
     floor_reference_eur: float = 0.0
     rebound_peak_eur: float = 0.0
-    consecutive_losses: int = 0
 
     def equity(self, price_eur: float) -> float:
         return self.cash_eur + self.bitcoin * price_eur
@@ -280,16 +279,6 @@ class PaperAccount:
         if not 0 < fraction <= 1:
             raise ValueError("Porcentaje de compra no válido.")
         return self.initial_cash_eur * fraction / (1 + fee_rate)
-
-    def all_available_buy_value(self, fee_rate: float = 0.0) -> float:
-        """Invierte todo el efectivo salvo la reserva, comisión incluida."""
-        budget = max(0.0, self.cash_eur - self.minimum_cash_eur)
-        return budget / (1 + fee_rate)
-
-    def record_sale_result(self, profit_eur: float) -> None:
-        self.consecutive_losses = (
-            self.consecutive_losses + 1 if profit_eur < 0 else 0
-        )
 
     def buy(
         self,
