@@ -35,8 +35,8 @@ class PaperAccountTests(unittest.TestCase):
     def test_next_buy_requires_a_lower_price_step(self):
         account = PaperAccount()
         account.buy(100_000, 2_000, "primera")
-        self.assertFalse(account.price_allows_next_buy(99_100, 0.01))
-        self.assertTrue(account.price_allows_next_buy(99_000, 0.01))
+        self.assertFalse(account.price_allows_next_buy(98_900, 0.012))
+        self.assertTrue(account.price_allows_next_buy(98_800, 0.012))
 
     def test_never_opens_more_than_four_lots(self):
         account = PaperAccount(
