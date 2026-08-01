@@ -30,6 +30,7 @@ con dinero ficticio. No se conecta a ningún exchange y no puede mover dinero re
 - No realiza compras inferiores a 500 €; con 2.200 € de efectivo, por ejemplo,
   no compra porque solo quedarían 200 € disponibles sobre la reserva.
 - Exposición máxima predeterminada del 60 % de la cartera.
+- Máximo estricto de cuatro lotes abiertos simultáneamente.
 - Calcula el coste medio real de las compras.
 - Simula comisiones y deslizamiento tanto al comprar como al vender.
 - El objetivo de venta se calcula después de esos costes.

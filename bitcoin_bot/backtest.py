@@ -64,6 +64,7 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
         minimum_cash_eur=settings.minimum_cash_eur,
         minimum_trade_eur=settings.minimum_trade_eur,
         max_position_fraction=settings.max_position_fraction,
+        max_open_lots=settings.max_open_lots,
     )
     strategy = MultiIndicatorStrategy()
     observed: list[float] = []

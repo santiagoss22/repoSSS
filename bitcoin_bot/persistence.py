@@ -61,4 +61,34 @@ def load_state(path: Path) -> tuple[PaperAccount, BotSettings]:
                 account_data.get("cost_basis_eur", 0.0),
             )
         ]
-    return PaperAccount(**account_data), BotSettings.from_dict(data.get("settings", {}))
+    account = PaperAccount(**account_data)
+    _remove_accidental_visual_test_lots(account)
+    return account, BotSettings.from_dict(data.get("settings", {}))
+
+
+def _remove_accidental_visual_test_lots(account: PaperAccount) -> None:
+    """Retira ocho lotes creados accidentalmente durante una prueba visual local."""
+    accidental_trades = [
+        trade for trade in account.trades
+        if trade.reason == "prueba"
+        and trade.timestamp.isoformat().startswith("2026-08-01T18:01:29")
+    ]
+    if not accidental_trades:
+        return
+    accidental_lots = [
+        lot for lot in account.lots
+        if lot.timestamp.isoformat().startswith("2026-08-01T18:01:29")
+        and 90_000 <= lot.entry_price_eur <= 90_070
+    ]
+    restored_cost = sum(lot.cost_basis_eur for lot in accidental_lots)
+    restored_bitcoin = sum(lot.bitcoin for lot in accidental_lots)
+    restored_fees = sum(trade.fee_eur for trade in accidental_trades)
+    account.cash_eur += restored_cost
+    account.bitcoin = max(0.0, account.bitcoin - restored_bitcoin)
+    account.cost_basis_eur = max(0.0, account.cost_basis_eur - restored_cost)
+    account.total_fees_eur = max(0.0, account.total_fees_eur - restored_fees)
+    accidental_lot_ids = {id(lot) for lot in accidental_lots}
+    account.lots = [
+        lot for lot in account.lots if id(lot) not in accidental_lot_ids
+    ]
+    account.trades = [trade for trade in account.trades if trade not in accidental_trades]

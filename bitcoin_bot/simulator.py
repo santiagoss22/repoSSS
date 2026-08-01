@@ -34,6 +34,7 @@ class PaperAccount:
     bitcoin: float = 0.0
     max_buy_fraction: float = 0.20
     max_position_fraction: float = 0.80
+    max_open_lots: int = 4
     minimum_cash_eur: float = 2_000.0
     minimum_trade_eur: float = 500.0
     cost_basis_eur: float = 0.0
@@ -156,6 +157,7 @@ class PaperAccount:
         return (
             spendable_cash >= self.minimum_trade_eur * (1 + fee_rate)
             and position_value < self.equity(price_eur) * self.max_position_fraction
+            and len(self.lots) < self.max_open_lots
         )
 
     def risk_sized_value(
@@ -184,6 +186,10 @@ class PaperAccount:
     ) -> Trade:
         if price_eur <= 0:
             raise ValueError("El precio debe ser positivo.")
+        if len(self.lots) >= self.max_open_lots:
+            raise ValueError(
+                f"Ya hay {self.max_open_lots} lotes abiertos, el máximo permitido."
+            )
         fraction = self.max_buy_fraction if max_fraction is None else max_fraction
         if not 0 < fraction <= self.max_position_fraction:
             raise ValueError("Porcentaje de compra no válido.")

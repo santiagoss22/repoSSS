@@ -18,6 +18,18 @@ from bitcoin_bot.technical_strategy import MultiIndicatorStrategy, atr_percent, 
 
 
 class PaperAccountTests(unittest.TestCase):
+    def test_never_opens_more_than_four_lots(self):
+        account = PaperAccount(
+            minimum_cash_eur=0,
+            max_position_fraction=0.8,
+            max_open_lots=4,
+        )
+        for _ in range(4):
+            account.buy(50_000, 500, "prueba", max_fraction=0.8)
+        self.assertFalse(account.can_buy(50_000))
+        with self.assertRaisesRegex(ValueError, "máximo permitido"):
+            account.buy(50_000, 500, "quinta", max_fraction=0.8)
+
     def test_buy_is_limited_to_ten_percent(self):
         account = PaperAccount(cash_eur=10_000)
         trade = account.buy(price_eur=50_000, value_eur=5_000, reason="prueba")

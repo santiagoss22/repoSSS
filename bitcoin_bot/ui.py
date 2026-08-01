@@ -111,7 +111,9 @@ class PriceChart(QWidget):
         risk_levels: tuple[float, float] = (0.0, 0.0),
     ) -> None:
         self.prices = prices[-120:]
-        self.trades = trades[-40:]
+        # Las compras se dibujan desde los lotes abiertos, no desde el historial.
+        # Así desaparecen del gráfico en cuanto se vende el lote correspondiente.
+        self.trades = [trade for trade in trades if trade.side == "VENTA"][-40:]
         self.purchase_levels = [
             (lot.cost_basis_eur / lot.bitcoin, lot.frozen)
             for lot in lots
@@ -178,6 +180,27 @@ class PriceChart(QWidget):
             painter.setPen(QPen(color, 1))
             label = "C" if trade.side == "COMPRA" else "V"
             painter.drawText(int(x) + 7, int(y) - 7, label)
+        self._draw_active_purchase_points(painter, points)
+
+    def _draw_active_purchase_points(
+        self, painter: QPainter, points: list[tuple[float, float]]
+    ) -> None:
+        used: set[int] = set()
+        for level, _ in self.purchase_levels:
+            index = min(
+                range(len(self.prices)),
+                key=lambda item: abs(self.prices[item] - level),
+            )
+            if index in used:
+                continue
+            used.add(index)
+            x, y = points[index]
+            color = QColor("#22c55e")
+            painter.setBrush(color)
+            painter.setPen(QPen(QColor("#f8fafc"), 1))
+            painter.drawEllipse(int(x) - 5, int(y) - 5, 10, 10)
+            painter.setPen(QPen(color, 1))
+            painter.drawText(int(x) + 7, int(y) - 7, "C")
 
     def _draw_purchase_levels(
         self, painter: QPainter, low: float, high: float, height: float, left: int
@@ -353,6 +376,7 @@ class MainWindow(QMainWindow):
         self.account.minimum_cash_eur = self.settings.minimum_cash_eur
         self.account.minimum_trade_eur = self.settings.minimum_trade_eur
         self.account.max_position_fraction = self.settings.max_position_fraction
+        self.account.max_open_lots = self.settings.max_open_lots
         for lot in self.account.lots:
             lot.frozen = False
         self.market = PriceSimulator(initial_price=self.account.last_market_price_eur)
@@ -871,6 +895,7 @@ class MainWindow(QMainWindow):
             self.account.minimum_cash_eur = self.settings.minimum_cash_eur
             self.account.minimum_trade_eur = self.settings.minimum_trade_eur
             self.account.max_position_fraction = self.settings.max_position_fraction
+            self.account.max_open_lots = self.settings.max_open_lots
             self._save()
             self._refresh()
 
@@ -892,6 +917,7 @@ class MainWindow(QMainWindow):
         self.account = PaperAccount(
             minimum_cash_eur=self.settings.minimum_cash_eur,
             minimum_trade_eur=self.settings.minimum_trade_eur,
+            max_open_lots=self.settings.max_open_lots,
         )
         self.market = PriceSimulator(initial_price=90_000.0)
         self.strategy = MultiIndicatorStrategy()
@@ -1009,7 +1035,8 @@ class MainWindow(QMainWindow):
         self.risk_status_label.setText(
             f"Riesgo: stop {stop_text} · objetivo {target_text} · "
             f"riesgo/operación {self.settings.risk_per_trade:.1%} · "
-            f"cooldown {cooldown}"
+            f"cooldown {cooldown} · "
+            f"lotes {len(self.account.lots)}/{self.account.max_open_lots}"
             + (
                 f" · spread {(self.live_ask - self.live_bid) / ((self.live_ask + self.live_bid) / 2):.2%}"
                 if self.market_mode != "simulated" and self.live_bid and self.live_ask
