@@ -13,23 +13,25 @@ class BotSettings:
     fee_rate: float = 0.006
     slippage_rate: float = 0.001
     risk_per_trade: float = 0.01
-    stop_loss: float = 0.06
+    stop_loss: float = 0.02
     trailing_activation: float = 0.025
     trailing_distance: float = 0.015
-    daily_loss_limit: float = 0.02
-    weekly_loss_limit: float = 0.04
-    cooldown_ticks: int = 15
+    daily_loss_limit: float = 0.03
+    weekly_loss_limit: float = 0.06
+    cooldown_ticks: int = 120
     buy_spacing_ticks: int = 15
     minimum_buy_price_drop: float = 0.012
     post_sale_cooldown_ticks: int = 30
     reentry_pullback: float = 0.02
     stable_reference_ticks: int = 20
     stable_reference_range: float = 0.008
-    defensive_loss: float = 0.03
+    defensive_loss: float = 0.01
     bearish_confirmation_ticks: int = 5
     rebound_from_floor: float = 0.015
-    max_position_fraction: float = 0.80
-    max_open_lots: int = 4
+    max_position_fraction: float = 1.0
+    max_open_lots: int = 1
+    max_consecutive_losses: int = 2
+    max_drawdown_limit: float = 0.10
     max_spread: float = 0.002
 
     def to_dict(self) -> dict:

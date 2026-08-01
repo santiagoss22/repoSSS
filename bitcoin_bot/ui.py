@@ -376,7 +376,7 @@ class SettingsDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Bitcoin Paper Bot")
+        self.setWindowTitle("Bitcoin Paper Bot · 1 Lote")
         self.resize(1050, 760)
         data_dir = Path(QStandardPaths.writableLocation(QStandardPaths.AppDataLocation))
         self.data_dir = data_dir
@@ -416,9 +416,11 @@ class MainWindow(QMainWindow):
 
         self.brand_icon = QLabel("₿")
         self.brand_icon.setObjectName("brandIcon")
-        self.brand_title = QLabel("BITCOIN PAPER BOT")
+        self.brand_title = QLabel("BITCOIN PAPER BOT · 1 LOTE")
         self.brand_title.setObjectName("brandTitle")
-        self.brand_subtitle = QLabel("Simulación · Estrategia automática · Sin dinero real")
+        self.brand_subtitle = QLabel(
+            "Simulación independiente · Un único lote · Sin dinero real"
+        )
         self.brand_subtitle.setObjectName("brandSubtitle")
         self.price_label = QLabel()
         self.price_label.setObjectName("price")
@@ -452,7 +454,7 @@ class MainWindow(QMainWindow):
         self.bot_toggle = QCheckBox("Bot automático")
         self.bot_toggle.setObjectName("botToggle")
 
-        self.buy_button = QPushButton("Comprar (20 % inicial)")
+        self.buy_button = QPushButton("Comprar todo salvo 2.000 €")
         self.buy_button.setObjectName("buyButton")
         self.buy_half_button = QPushButton("Comprar (50 %)")
         self.buy_half_button.setObjectName("buyButton")
@@ -504,7 +506,6 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.bot_toggle)
         controls.addStretch()
         controls.addWidget(self.buy_button)
-        controls.addWidget(self.buy_half_button)
         controls.addWidget(self.sell_button)
 
         metrics_grid = QGridLayout()
@@ -571,11 +572,9 @@ class MainWindow(QMainWindow):
 
         self.buy_button.clicked.connect(
             lambda: self._buy(
-                "Compra manual del 20 % inicial",
+                "Compra manual de todo el efectivo disponible",
                 self.settings.max_position_fraction,
-                self.account.fixed_initial_buy_value(
-                    0.20, self.settings.fee_rate
-                ),
+                self.account.all_available_buy_value(self.settings.fee_rate),
             )
         )
         self.buy_half_button.clicked.connect(
@@ -758,13 +757,14 @@ class MainWindow(QMainWindow):
                 self.settings.trailing_distance,
             )
             if stopped:
-                self.account.sell_selected_lots(
+                trade = self.account.sell_selected_lots(
                     stopped,
                     self.market.price,
                     f"{stop_kind} ({len(stopped)} lote/s)",
                     self.settings.fee_rate,
                     self.settings.slippage_rate,
                 )
+                self.account.record_sale_result(trade.pnl_eur)
                 self.account.cooldown_remaining = self.settings.cooldown_ticks
                 self.account.register_sale(
                     self.market.price,
@@ -802,13 +802,14 @@ class MainWindow(QMainWindow):
                     if rebound_failed else
                     "Venta defensiva: -3 % y tendencia bajista"
                 )
-                self.account.sell_selected_lots(
+                trade = self.account.sell_selected_lots(
                     defensive,
                     self.market.price,
                     reason,
                     self.settings.fee_rate,
                     self.settings.slippage_rate,
                 )
+                self.account.record_sale_result(trade.pnl_eur)
                 self.account.register_sale(
                     self.market.price,
                     self.settings.post_sale_cooldown_ticks,
@@ -826,13 +827,14 @@ class MainWindow(QMainWindow):
                 self.settings.slippage_rate,
             )
             if profitable:
-                self.account.sell_profitable_lots(
+                trade = self.account.sell_profitable_lots(
                     self.market.price,
                     self.settings.sell_gain,
                     f"Objetivo individual alcanzado ({len(profitable)} lote/s)",
                     fee_rate=self.settings.fee_rate,
                     slippage_rate=self.settings.slippage_rate,
                 )
+                self.account.record_sale_result(trade.pnl_eur)
                 self.account.register_sale(
                     self.market.price,
                     self.settings.post_sale_cooldown_ticks,
@@ -934,6 +936,10 @@ class MainWindow(QMainWindow):
             return "límite de pérdida diaria alcanzado"
         if weekly >= self.account.initial_cash_eur * self.settings.weekly_loss_limit:
             return "límite de pérdida semanal alcanzado"
+        if self.account.consecutive_losses >= self.settings.max_consecutive_losses:
+            return "dos pérdidas consecutivas; requiere reinicio manual"
+        if self.account.max_drawdown >= self.settings.max_drawdown_limit:
+            return "caída máxima del 10 %; requiere revisión"
         return ""
 
     def _market_pause_reason(self) -> str:
@@ -949,10 +955,7 @@ class MainWindow(QMainWindow):
         return ""
 
     def _buy_risk_sized(self, reason: str) -> None:
-        value = self.account.fixed_initial_buy_value(
-            0.20,
-            self.settings.fee_rate,
-        )
+        value = self.account.all_available_buy_value(self.settings.fee_rate)
         self._buy(
             reason,
             self.settings.max_position_fraction,
@@ -1000,12 +1003,13 @@ class MainWindow(QMainWindow):
 
     def _sell(self, reason: str) -> None:
         try:
-            self.account.sell_all(
+            trade = self.account.sell_all(
                 self.market.price,
                 reason,
                 fee_rate=self.settings.fee_rate,
                 slippage_rate=self.settings.slippage_rate,
             )
+            self.account.record_sale_result(trade.pnl_eur)
             self.account.register_sale(
                 self.market.price,
                 self.settings.post_sale_cooldown_ticks,
@@ -1298,7 +1302,7 @@ class MainWindow(QMainWindow):
 
 def run() -> None:
     app = QApplication(sys.argv)
-    app.setApplicationName("Bitcoin Paper Bot")
+    app.setApplicationName("Bitcoin Paper Bot 1 Lote")
     app.setOrganizationName("Santiago")
     app.setStyle("Fusion")
     window = MainWindow()
