@@ -329,6 +329,12 @@ class SettingsDialog(QDialog):
         form.addRow("Cooldown tras pérdida (ciclos)", cooldown)
         self.inputs["cooldown_ticks"] = cooldown
 
+        buy_spacing = QSpinBox()
+        buy_spacing.setRange(0, 60)
+        buy_spacing.setValue(settings.buy_spacing_ticks)
+        form.addRow("Separación entre compras (ciclos)", buy_spacing)
+        self.inputs["buy_spacing_ticks"] = buy_spacing
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.Save | QDialogButtonBox.Cancel
         )
@@ -350,6 +356,9 @@ class SettingsDialog(QDialog):
         settings.minimum_cash_eur = self.inputs["minimum_cash_eur"].value()
         settings.minimum_trade_eur = self.inputs["minimum_trade_eur"].value()
         settings.cooldown_ticks = int(self.inputs["cooldown_ticks"].value())
+        settings.buy_spacing_ticks = int(
+            self.inputs["buy_spacing_ticks"].value()
+        )
 
 
 class MainWindow(QMainWindow):
@@ -707,6 +716,8 @@ class MainWindow(QMainWindow):
         if self.bot_toggle.isChecked():
             if self.account.cooldown_remaining > 0:
                 self.account.cooldown_remaining -= 1
+            if self.account.buy_cooldown_remaining > 0:
+                self.account.buy_cooldown_remaining -= 1
 
             stopped, stop_kind = self.account.stopped_lots(
                 self.market.price,
@@ -768,6 +779,7 @@ class MainWindow(QMainWindow):
                 action == "COMPRAR"
                 and not pause_reason
                 and self.account.cooldown_remaining == 0
+                and self.account.buy_cooldown_remaining == 0
                 and self.account.can_buy(
                     self.market.price,
                     fee_rate=self.settings.fee_rate,
@@ -778,7 +790,12 @@ class MainWindow(QMainWindow):
                 reason = pause_reason or (
                     f"cooldown: quedan {self.account.cooldown_remaining} ciclos"
                     if self.account.cooldown_remaining else
-                    "no alcanza la compra mínima manteniendo la reserva"
+                    (
+                        "separación entre compras: quedan "
+                        f"{self.account.buy_cooldown_remaining} ciclos"
+                        if self.account.buy_cooldown_remaining else
+                        "no alcanza la compra mínima manteniendo la reserva"
+                    )
                 )
                 self.bot_status_label.setText(f"Bot: compra pausada · {reason}")
                 self.decision_label.setText(
@@ -862,6 +879,10 @@ class MainWindow(QMainWindow):
                 fee_rate=self.settings.fee_rate,
                 slippage_rate=self.settings.slippage_rate,
             )
+            if not show_dialog:
+                self.account.buy_cooldown_remaining = (
+                    self.settings.buy_spacing_ticks
+                )
             self._append_trade()
             self._save()
         except ValueError as error:
@@ -1031,11 +1052,12 @@ class MainWindow(QMainWindow):
         )
         pause = self._risk_pause_reason()
         cooldown = self.account.cooldown_remaining
+        buy_spacing = self.account.buy_cooldown_remaining
         stop_text = f"{stop:,.0f} €" if stop else "—"
         self.risk_status_label.setText(
             f"Riesgo: stop {stop_text} · objetivo {target_text} · "
             f"riesgo/operación {self.settings.risk_per_trade:.1%} · "
-            f"cooldown {cooldown} · "
+            f"cooldown {cooldown} · próxima compra {buy_spacing} · "
             f"lotes {len(self.account.lots)}/{self.account.max_open_lots}"
             + (
                 f" · spread {(self.live_ask - self.live_bid) / ((self.live_ask + self.live_bid) / 2):.2%}"

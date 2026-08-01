@@ -46,6 +46,7 @@ class PaperAccount:
     trades: list[Trade] = field(default_factory=list)
     lots: list[PositionLot] = field(default_factory=list)
     cooldown_remaining: int = 0
+    buy_cooldown_remaining: int = 0
 
     def equity(self, price_eur: float) -> float:
         return self.cash_eur + self.bitcoin * price_eur

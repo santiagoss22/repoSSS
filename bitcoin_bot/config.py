@@ -19,6 +19,7 @@ class BotSettings:
     daily_loss_limit: float = 0.02
     weekly_loss_limit: float = 0.04
     cooldown_ticks: int = 15
+    buy_spacing_ticks: int = 3
     max_position_fraction: float = 0.60
     max_open_lots: int = 4
     max_spread: float = 0.002

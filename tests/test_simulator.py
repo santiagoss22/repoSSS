@@ -44,6 +44,16 @@ class PaperAccountTests(unittest.TestCase):
         self.assertEqual(account.bitcoin, 0)
         self.assertAlmostEqual(account.cash_eur, 10_200)
 
+    def test_sale_immediately_adds_net_value_to_available_cash(self):
+        account = PaperAccount(cash_eur=10_000)
+        account.buy(50_000, 2_000, "prueba", fee_rate=0.006)
+        cash_before_sale = account.cash_eur
+        trade = account.sell_all(55_000, "prueba", fee_rate=0.006)
+        self.assertAlmostEqual(
+            account.cash_eur,
+            cash_before_sale + trade.value_eur - trade.fee_eur,
+        )
+
     def test_position_limit_blocks_additional_buys(self):
         account = PaperAccount(cash_eur=2_000, bitcoin=0.1)
         self.assertFalse(account.can_buy(price_eur=100_000))
