@@ -738,6 +738,8 @@ class MainWindow(QMainWindow):
                 self.account.buy_cooldown_remaining -= 1
             if self.account.post_sale_cooldown_remaining > 0:
                 self.account.post_sale_cooldown_remaining -= 1
+            if self.account.loss_streak_cooldown_remaining > 0:
+                self.account.loss_streak_cooldown_remaining -= 1
             self.account.update_reentry_reference(
                 self.market.price,
                 self.settings.stable_reference_ticks,
@@ -758,12 +760,17 @@ class MainWindow(QMainWindow):
                 self.settings.trailing_distance,
             )
             if stopped:
-                self.account.sell_selected_lots(
+                trade = self.account.sell_selected_lots(
                     stopped,
                     self.market.price,
                     f"{stop_kind} ({len(stopped)} lote/s)",
                     self.settings.fee_rate,
                     self.settings.slippage_rate,
+                )
+                self.account.record_sale_result(
+                    trade.pnl_eur,
+                    self.settings.loss_streak_pause_after,
+                    self.settings.loss_streak_pause_ticks,
                 )
                 self.account.cooldown_remaining = self.settings.cooldown_ticks
                 self.account.register_sale(
@@ -802,12 +809,17 @@ class MainWindow(QMainWindow):
                     if rebound_failed else
                     "Venta defensiva: -3 % y tendencia bajista"
                 )
-                self.account.sell_selected_lots(
+                trade = self.account.sell_selected_lots(
                     defensive,
                     self.market.price,
                     reason,
                     self.settings.fee_rate,
                     self.settings.slippage_rate,
+                )
+                self.account.record_sale_result(
+                    trade.pnl_eur,
+                    self.settings.loss_streak_pause_after,
+                    self.settings.loss_streak_pause_ticks,
                 )
                 self.account.register_sale(
                     self.market.price,
@@ -826,12 +838,17 @@ class MainWindow(QMainWindow):
                 self.settings.slippage_rate,
             )
             if profitable:
-                self.account.sell_profitable_lots(
+                trade = self.account.sell_profitable_lots(
                     self.market.price,
                     self.settings.sell_gain,
                     f"Objetivo individual alcanzado ({len(profitable)} lote/s)",
                     fee_rate=self.settings.fee_rate,
                     slippage_rate=self.settings.slippage_rate,
+                )
+                self.account.record_sale_result(
+                    trade.pnl_eur,
+                    self.settings.loss_streak_pause_after,
+                    self.settings.loss_streak_pause_ticks,
                 )
                 self.account.register_sale(
                     self.market.price,
@@ -934,6 +951,17 @@ class MainWindow(QMainWindow):
             return "límite de pérdida diaria alcanzado"
         if weekly >= self.account.initial_cash_eur * self.settings.weekly_loss_limit:
             return "límite de pérdida semanal alcanzado"
+        if self.account.max_drawdown >= self.settings.drawdown_halt:
+            return "drawdown del 10 %; requiere revisión manual"
+        if self.account.max_drawdown >= self.settings.drawdown_block_buys:
+            return "drawdown del 8 %; compras bloqueadas"
+        if self.account.consecutive_losses >= self.settings.loss_streak_halt_after:
+            return "tres pérdidas consecutivas; requiere revisión manual"
+        if self.account.loss_streak_cooldown_remaining > 0:
+            return (
+                "racha de pérdidas: quedan "
+                f"{self.account.loss_streak_cooldown_remaining} ciclos"
+            )
         return ""
 
     def _market_pause_reason(self) -> str:
@@ -949,10 +977,33 @@ class MainWindow(QMainWindow):
         return ""
 
     def _buy_risk_sized(self, reason: str) -> None:
-        value = self.account.fixed_initial_buy_value(
-            0.20,
-            self.settings.fee_rate,
+        reduced = (
+            self.current_size_factor < 1
+            or self.account.max_drawdown >= self.settings.drawdown_reduce_size
         )
+        budget = (
+            self.settings.high_volatility_buy_eur
+            if reduced else self.settings.normal_buy_eur
+        )
+        maximum_risk = (
+            self.account.initial_cash_eur * self.settings.max_open_risk
+        )
+        if not self.account.can_add_risk(
+            self.market.price,
+            budget,
+            self.settings.stop_loss,
+            maximum_risk,
+            self.settings.fee_rate,
+            self.settings.slippage_rate,
+        ):
+            self.bot_status_label.setText(
+                "Bot: compra pausada · riesgo abierto máximo alcanzado"
+            )
+            self.decision_label.setText(
+                "Decisión actual: el nuevo lote superaría el 4 % de riesgo conjunto."
+            )
+            return
+        value = budget / (1 + self.settings.fee_rate)
         self._buy(
             reason,
             self.settings.max_position_fraction,
@@ -1000,11 +1051,16 @@ class MainWindow(QMainWindow):
 
     def _sell(self, reason: str) -> None:
         try:
-            self.account.sell_all(
+            trade = self.account.sell_all(
                 self.market.price,
                 reason,
                 fee_rate=self.settings.fee_rate,
                 slippage_rate=self.settings.slippage_rate,
+            )
+            self.account.record_sale_result(
+                trade.pnl_eur,
+                self.settings.loss_streak_pause_after,
+                self.settings.loss_streak_pause_ticks,
             )
             self.account.register_sale(
                 self.market.price,
@@ -1068,6 +1124,9 @@ class MainWindow(QMainWindow):
         try:
             prices = download_coinbase_daily_prices()
             result = run_backtest(prices, self.settings)
+            validation_start = max(0, int(len(prices) * 0.70))
+            validation_prices = prices[validation_start:]
+            validation = run_backtest(validation_prices, self.settings)
             QMessageBox.information(
                 self,
                 "Backtest BTC-EUR · Coinbase",
@@ -1083,9 +1142,16 @@ class MainWindow(QMainWindow):
                     f"Ventas ganadoras: {result.winning_sales}\n"
                     f"Ventas no ganadoras: {result.losing_sales}\n"
                     f"Porcentaje de aciertos: {result.win_rate_percent:.1f} %\n"
+                    f"Ganancia media: {result.average_win_eur:,.2f} €\n"
+                    f"Pérdida media: {result.average_loss_eur:,.2f} €\n"
+                    f"Profit factor: {result.profit_factor:.2f}\n"
+                    f"Racha máxima de pérdidas: {result.max_losing_streak}\n"
                     f"Rentabilidad anualizada: {result.annualized_return_percent:+.2f} %\n"
                     f"Comprar y mantener: {result.buy_hold_return_percent:+.2f} %\n"
                     f"Diferencia frente a mantener: {result.excess_return_percent:+.2f} %\n\n"
+                    f"Validación final (último 30 %): "
+                    f"{validation.return_percent:+.2f} % · "
+                    f"drawdown {validation.max_drawdown_percent:.2f} %\n\n"
                     "Resultado histórico orientativo; no predice resultados futuros."
                 ),
             )
@@ -1160,10 +1226,17 @@ class MainWindow(QMainWindow):
         pause = self._risk_pause_reason()
         cooldown = self.account.cooldown_remaining
         buy_spacing = self.account.buy_cooldown_remaining
+        open_risk = self.account.estimated_open_risk(
+            self.settings.stop_loss,
+            self.settings.fee_rate,
+            self.settings.slippage_rate,
+        )
         stop_text = f"{stop:,.0f} €" if stop else "—"
         self.risk_status_label.setText(
             f"Riesgo: stop {stop_text} · objetivo {target_text} · "
-            f"riesgo/operación {self.settings.risk_per_trade:.1%} · "
+            f"riesgo abierto {open_risk:,.0f} € / "
+            f"{self.account.initial_cash_eur * self.settings.max_open_risk:,.0f} € · "
+            f"racha {self.account.consecutive_losses} · "
             f"cooldown {cooldown} · próxima compra {buy_spacing} · "
             f"lotes {len(self.account.lots)}/{self.account.max_open_lots}"
             + (

@@ -18,6 +18,42 @@ from bitcoin_bot.technical_strategy import MultiIndicatorStrategy, atr_percent, 
 
 
 class PaperAccountTests(unittest.TestCase):
+    def test_open_risk_budget_blocks_third_standard_lot(self):
+        account = PaperAccount(max_position_fraction=0.80, max_open_lots=4)
+        fee = 0.006
+        slippage = 0.001
+        for price in (100_000, 98_000):
+            value = 2_000 / (1 + fee)
+            account.buy(
+                price,
+                value,
+                "riesgo",
+                max_fraction=0.80,
+                fee_rate=fee,
+                slippage_rate=slippage,
+            )
+        self.assertFalse(
+            account.can_add_risk(
+                96_000, 2_000, 0.06, 400, fee, slippage
+            )
+        )
+        self.assertTrue(
+            account.can_add_risk(
+                96_000, 1_000, 0.06, 500, fee, slippage
+            )
+        )
+
+    def test_loss_streak_sets_pause_and_profit_resets_it(self):
+        account = PaperAccount()
+        account.record_sale_result(-100, pause_after=2, pause_ticks=120)
+        self.assertEqual(account.loss_streak_cooldown_remaining, 0)
+        account.record_sale_result(-50, pause_after=2, pause_ticks=120)
+        self.assertEqual(account.consecutive_losses, 2)
+        self.assertEqual(account.loss_streak_cooldown_remaining, 120)
+        account.record_sale_result(25, pause_after=2, pause_ticks=120)
+        self.assertEqual(account.consecutive_losses, 0)
+        self.assertEqual(account.loss_streak_cooldown_remaining, 0)
+
     def test_post_sale_reference_moves_up_after_stable_market(self):
         account = PaperAccount()
         account.register_sale(100_000, cooldown_ticks=30)
@@ -340,6 +376,10 @@ class BacktestTests(unittest.TestCase):
             result.excess_return_percent,
             result.return_percent - result.buy_hold_return_percent,
         )
+        self.assertGreaterEqual(result.average_win_eur, 0)
+        self.assertGreaterEqual(result.average_loss_eur, 0)
+        self.assertGreaterEqual(result.profit_factor, 0)
+        self.assertGreaterEqual(result.max_losing_streak, 0)
 
 
 class TechnicalIndicatorTests(unittest.TestCase):

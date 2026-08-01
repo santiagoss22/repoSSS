@@ -31,6 +31,15 @@ class BotSettings:
     max_position_fraction: float = 0.80
     max_open_lots: int = 4
     max_spread: float = 0.002
+    max_open_risk: float = 0.04
+    normal_buy_eur: float = 2_000.0
+    high_volatility_buy_eur: float = 1_000.0
+    loss_streak_pause_after: int = 2
+    loss_streak_halt_after: int = 3
+    loss_streak_pause_ticks: int = 120
+    drawdown_reduce_size: float = 0.05
+    drawdown_block_buys: float = 0.08
+    drawdown_halt: float = 0.10
 
     def to_dict(self) -> dict:
         return asdict(self)

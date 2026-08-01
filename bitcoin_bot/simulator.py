@@ -55,6 +55,8 @@ class PaperAccount:
     floor_prices: list[float] = field(default_factory=list)
     floor_reference_eur: float = 0.0
     rebound_peak_eur: float = 0.0
+    consecutive_losses: int = 0
+    loss_streak_cooldown_remaining: int = 0
 
     def equity(self, price_eur: float) -> float:
         return self.cash_eur + self.bitcoin * price_eur
@@ -269,6 +271,79 @@ class PaperAccount:
             return 0.0
         risk_budget = self.equity(price_eur) * risk_rate
         return risk_budget / effective_loss
+
+    def estimated_open_risk(
+        self,
+        stop_loss: float,
+        fee_rate: float = 0.0,
+        slippage_rate: float = 0.0,
+    ) -> float:
+        total = 0.0
+        for lot in self.lots:
+            entry = lot.entry_price_eur or lot.cost_basis_eur / lot.bitcoin
+            stop_market = entry * (1 - stop_loss)
+            expected_net = (
+                lot.bitcoin
+                * stop_market
+                * (1 - slippage_rate)
+                * (1 - fee_rate)
+            )
+            total += max(0.0, lot.cost_basis_eur - expected_net)
+        return total
+
+    def estimated_new_trade_risk(
+        self,
+        price_eur: float,
+        total_budget_eur: float,
+        stop_loss: float,
+        fee_rate: float = 0.0,
+        slippage_rate: float = 0.0,
+    ) -> float:
+        principal = total_budget_eur / (1 + fee_rate)
+        execution_price = price_eur * (1 + slippage_rate)
+        amount = principal / execution_price
+        stop_market = execution_price * (1 - stop_loss)
+        expected_net = (
+            amount
+            * stop_market
+            * (1 - slippage_rate)
+            * (1 - fee_rate)
+        )
+        return max(0.0, total_budget_eur - expected_net)
+
+    def can_add_risk(
+        self,
+        price_eur: float,
+        total_budget_eur: float,
+        stop_loss: float,
+        maximum_risk_eur: float,
+        fee_rate: float = 0.0,
+        slippage_rate: float = 0.0,
+    ) -> bool:
+        projected = self.estimated_open_risk(
+            stop_loss, fee_rate, slippage_rate
+        ) + self.estimated_new_trade_risk(
+            price_eur,
+            total_budget_eur,
+            stop_loss,
+            fee_rate,
+            slippage_rate,
+        )
+        return projected <= maximum_risk_eur
+
+    def record_sale_result(
+        self,
+        pnl_eur: float,
+        pause_after: int,
+        pause_ticks: int,
+    ) -> None:
+        if pnl_eur < 0:
+            self.consecutive_losses += 1
+            if self.consecutive_losses >= pause_after:
+                self.loss_streak_cooldown_remaining = pause_ticks
+        else:
+            self.consecutive_losses = 0
+            self.loss_streak_cooldown_remaining = 0
 
     def fixed_initial_buy_value(
         self,
