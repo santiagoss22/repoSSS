@@ -29,7 +29,7 @@ class PaperAccountTests(unittest.TestCase):
         self.assertFalse(account.post_sale_buy_allowed(100_400, 0.02, False))
 
     def test_defensive_loss_selects_only_affected_lot(self):
-        account = PaperAccount(max_position_fraction=0.80)
+        account = PaperAccount(max_position_fraction=0.80, max_open_lots=4)
         account.buy(100_000, 2_000, "lote caro", max_fraction=0.80)
         account.buy(90_000, 2_000, "lote barato", max_fraction=0.80)
         selected = account.losing_lots(96_500, 0.03)
@@ -47,7 +47,7 @@ class PaperAccountTests(unittest.TestCase):
         )
 
     def test_fixed_initial_twenty_percent_spends_exactly_two_thousand(self):
-        account = PaperAccount(max_position_fraction=0.80)
+        account = PaperAccount(max_position_fraction=0.80, max_open_lots=4)
         for index in range(4):
             value = account.fixed_initial_buy_value(0.20, fee_rate=0.006)
             trade = account.buy(
@@ -65,6 +65,28 @@ class PaperAccountTests(unittest.TestCase):
         account.buy(100_000, 2_000, "primera")
         self.assertFalse(account.price_allows_next_buy(98_900, 0.012))
         self.assertTrue(account.price_allows_next_buy(98_800, 0.012))
+
+    def test_single_lot_invests_everything_above_fixed_reserve(self):
+        account = PaperAccount()
+        value = account.all_available_buy_value(fee_rate=0.006)
+        trade = account.buy(
+            100_000,
+            value,
+            "lote único",
+            max_fraction=1.0,
+            fee_rate=0.006,
+        )
+        self.assertAlmostEqual(trade.value_eur + trade.fee_eur, 8_000)
+        self.assertAlmostEqual(account.cash_eur, 2_000)
+        self.assertFalse(account.can_buy(100_000))
+
+    def test_two_consecutive_losses_are_recorded(self):
+        account = PaperAccount()
+        account.record_sale_result(-100)
+        account.record_sale_result(-50)
+        self.assertEqual(account.consecutive_losses, 2)
+        account.record_sale_result(25)
+        self.assertEqual(account.consecutive_losses, 0)
 
     def test_never_opens_more_than_four_lots(self):
         account = PaperAccount(
@@ -168,7 +190,7 @@ class PaperAccountTests(unittest.TestCase):
         self.assertEqual(account.realized_profit_eur, trade.pnl_eur)
 
     def test_profitable_lots_are_sold_independently(self):
-        account = PaperAccount()
+        account = PaperAccount(max_open_lots=4)
         account.buy(50_000, 2_000, "lote barato")
         account.buy(100_000, 2_000, "lote caro")
         trade = account.sell_profitable_lots(
@@ -181,7 +203,7 @@ class PaperAccountTests(unittest.TestCase):
         self.assertGreater(trade.pnl_eur, 0)
 
     def test_frozen_profitable_lot_is_not_sold_in_recovery(self):
-        account = PaperAccount()
+        account = PaperAccount(max_open_lots=4)
         account.buy(50_000, 2_000, "lote congelado")
         account.freeze_existing_lots()
         account.buy(60_000, 2_000, "lote operable")
@@ -289,7 +311,7 @@ class PersistenceTests(unittest.TestCase):
             {"sell_gain": 0.025, "recovery_loss_trigger": 0.10}
         )
         self.assertEqual(settings.sell_gain, 0.04)
-        self.assertEqual(settings.stop_loss, 0.06)
+        self.assertEqual(settings.stop_loss, 0.02)
 
 
 class MarketDataTests(unittest.TestCase):
@@ -371,7 +393,7 @@ class TechnicalIndicatorTests(unittest.TestCase):
 
 class RecoveryModeTests(unittest.TestCase):
     def test_deep_loss_freezes_old_lots_after_stabilization(self):
-        account = PaperAccount()
+        account = PaperAccount(max_open_lots=4)
         account.buy(50_000, 2_000, "lote antiguo")
         recovery = RecoveryController(
             loss_trigger=0.10,
@@ -386,7 +408,7 @@ class RecoveryModeTests(unittest.TestCase):
         self.assertIn("Recuperación activa", status)
 
     def test_recovery_sale_leaves_frozen_lot_untouched(self):
-        account = PaperAccount()
+        account = PaperAccount(max_open_lots=4)
         account.buy(50_000, 2_000, "lote antiguo")
         account.freeze_existing_lots()
         frozen_amount = account.frozen_bitcoin

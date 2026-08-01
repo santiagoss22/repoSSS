@@ -1,7 +1,8 @@
-# Bitcoin Paper Bot
+# Bitcoin Paper Bot · 1 Lote
 
-Aplicación de escritorio educativa para macOS que simula operaciones de Bitcoin
-con dinero ficticio. No se conecta a ningún exchange y no puede mover dinero real.
+Variante independiente para macOS que simula operaciones de Bitcoin con un único
+lote. Invierte todo el efectivo disponible salvo una reserva fija de 2.000 €.
+No puede mover dinero real.
 
 ## Funciones
 
@@ -20,21 +21,20 @@ con dinero ficticio. No se conecta a ningún exchange y no puede mover dinero re
   Bandas de Bollinger y mejora del MACD en velas de una hora.
 - Exige al menos dos de tres condiciones y confirmación EMA 9/21 en cinco minutos.
 - Calcula ATR y bloquea señales con volatilidad extrema.
-- Cada lote se vende automáticamente al alcanzar el take-profit neto configurado
+- El único lote se vende automáticamente al alcanzar el take-profit neto configurado
   (4 % de forma predeterminada).
-- Botones de compra manual del 20 % inicial y del 50 %.
-- Cada compra automática reserva exactamente 2.000 €, comisión incluida.
-- Puede efectuar compras sucesivas sin esperar a vender.
+- Un botón compra todo el efectivo que exceda la reserva fija.
+- Solo puede existir un lote abierto; hay que venderlo antes de volver a comprar.
 - Conserva siempre un mínimo de 2.000 € en efectivo.
 - No realiza compras inferiores a 500 €; con 2.200 € de efectivo, por ejemplo,
   no compra porque solo quedarían 200 € disponibles sobre la reserva.
-- Exposición máxima predeterminada del 80 % de la cartera.
-- Máximo estricto de cuatro lotes abiertos simultáneamente.
+- Exposición limitada por la reserva fija de 2.000 €.
+- Máximo estricto de un lote abierto.
 - Calcula el coste medio real de las compras.
 - Simula comisiones y deslizamiento tanto al comprar como al vender.
 - El objetivo de venta se calcula después de esos costes.
-- Stop-loss del 6 % por lote y trailing stop del 1,5 % cuando la ganancia alcanza 2,5 %.
-- Venta defensiva del lote desde una pérdida del 3 % tras cinco confirmaciones
+- Stop-loss del 2 % y trailing stop del 1,5 % cuando la ganancia alcanza 2,5 %.
+- Venta defensiva desde una pérdida del 1 % tras cinco confirmaciones
   bajistas consecutivas de EMA y MACD.
 - Detecta un suelo estable durante 20 ciclos y vende un lote con pérdida si un
   rebote mínimo del 1,5 % vuelve a girarse a la baja.
@@ -42,8 +42,9 @@ con dinero ficticio. No se conecta a ningún exchange y no puede mover dinero re
   con confirmación técnica. Una consolidación superior actualiza la referencia.
 - Entre compras espera 15 ciclos y admite entradas más altas cuando EMA y al
   menos dos indicadores confirman la señal.
-- Cooldown de 15 ciclos después de una salida por pérdida.
-- Pausa automática al perder un 2 % diario o un 4 % semanal.
+- Cooldown de 120 ciclos después de una salida por pérdida.
+- Pausa automática al perder un 3 % diario o un 6 % semanal.
+- Se detiene tras dos pérdidas consecutivas o un drawdown del 10 %.
 - Guarda automáticamente la cartera, el historial y la configuración.
 - Permite cambiar porcentajes, ciclos, costes, reserva y protección desde la app.
 - Ejecuta backtests sobre hasta tres años de velas diarias públicas BTC-EUR de Coinbase.
