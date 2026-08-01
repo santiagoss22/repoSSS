@@ -4,6 +4,7 @@ from tempfile import TemporaryDirectory
 
 from bitcoin_bot.backtest import run_backtest
 from bitcoin_bot.config import BotSettings
+from bitcoin_bot.market_data import Candle, CandleStore
 from bitcoin_bot.persistence import load_state, save_state
 from bitcoin_bot.simulator import (
     MovingAverageStrategy,
@@ -217,6 +218,26 @@ class PersistenceTests(unittest.TestCase):
         )
         self.assertEqual(settings.sell_gain, 0.12)
         self.assertEqual(settings.stop_loss, 0.06)
+
+
+class MarketDataTests(unittest.TestCase):
+    def test_candles_are_persisted_without_duplicates(self):
+        with TemporaryDirectory() as directory:
+            store = CandleStore(Path(directory) / "candles.sqlite")
+            candles = [
+                Candle(1, 90, 95, 89, 94, 10),
+                Candle(2, 94, 96, 92, 93, 12),
+            ]
+            store.save("binance", "BTC/EUR", "1h", candles)
+            store.save("binance", "BTC/EUR", "1h", candles)
+            self.assertEqual(
+                store.load("binance", "BTC/EUR", "1h", 100), candles
+            )
+
+    def test_ccxt_candle_conversion(self):
+        candle = Candle.from_ccxt([1, 90, 95, 89, 94, 10])
+        self.assertEqual(candle.close, 94)
+        self.assertEqual(candle.volume, 10)
 
 
 class BacktestTests(unittest.TestCase):

@@ -22,6 +22,7 @@ class BotSettings:
     weekly_loss_limit: float = 0.04
     cooldown_ticks: int = 15
     max_position_fraction: float = 0.60
+    max_spread: float = 0.002
 
     def to_dict(self) -> dict:
         return asdict(self)

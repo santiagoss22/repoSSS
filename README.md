@@ -6,6 +6,12 @@ con dinero ficticio. No se conecta a ningún exchange y no puede mover dinero re
 ## Funciones
 
 - Precio de BTC simulado localmente.
+- Selector entre mercado simulado y datos públicos BTC/EUR de Binance o Coinbase.
+- Precio, bid, ask y velas en vivo mediante WebSocket de CCXT.
+- Histórico OHLCV local en SQLite para `5m`, `1h` y `1d`.
+- La estrategia en vivo decide únicamente al cerrar una vela de una hora.
+- Bloquea nuevas compras si los datos llevan 30 segundos sin actualizarse o
+  si el spread supera el límite configurado.
 - Precio acotado entre 20.000 € y 200.000 €, con reversión gradual hacia
   90.000 € para evitar tendencias exponenciales irreales.
 - Cartera inicial de 10.000 €.
@@ -47,6 +53,9 @@ con dinero ficticio. No se conecta a ningún exchange y no puede mover dinero re
 
 El histórico de Coinbase puede contener intervalos sin datos y un backtest no
 predice resultados futuros.
+
+Los feeds de mercado son públicos y no requieren claves. El modo de mercado real
+sigue operando exclusivamente con dinero simulado: no envía órdenes al exchange.
 
 ## Funcionamiento con la pantalla apagada
 
