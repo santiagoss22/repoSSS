@@ -109,6 +109,7 @@ class PriceChart(QWidget):
     def set_data(
         self, prices: list[float], trades: list, lots: list,
         risk_levels: tuple[float, float] = (0.0, 0.0),
+        chart_range_eur: float = 2_000.0,
     ) -> None:
         self.prices = prices[-120:]
         # Las compras se dibujan desde los lotes abiertos, no desde el historial.
@@ -120,6 +121,7 @@ class PriceChart(QWidget):
             if lot.bitcoin > 0
         ][-8:]
         self.risk_levels = risk_levels
+        self.chart_range_eur = max(chart_range_eur, 100.0)
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -129,8 +131,9 @@ class PriceChart(QWidget):
         if len(self.prices) < 2:
             return
         current = self.prices[-1]
-        low = min(min(self.prices), current * 0.95)
-        high = max(max(self.prices), current * 1.05)
+        chart_range = getattr(self, "chart_range_eur", 2_000.0)
+        low = current - chart_range
+        high = current + chart_range
         spread = max(high - low, 1.0)
         left, right = 132, 84
         width = max(self.width() - left - right, 1)
@@ -378,6 +381,15 @@ class SettingsDialog(QDialog):
         form.addRow("Caída mínima para recomprar", buy_drop)
         self.inputs["minimum_buy_price_drop"] = buy_drop
 
+        chart_range = QDoubleSpinBox()
+        chart_range.setRange(500, 100_000)
+        chart_range.setDecimals(0)
+        chart_range.setSingleStep(500)
+        chart_range.setSuffix(" €")
+        chart_range.setValue(settings.chart_range_eur)
+        form.addRow("Rango vertical del gráfico (±)", chart_range)
+        self.inputs["chart_range_eur"] = chart_range
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.Save | QDialogButtonBox.Cancel
         )
@@ -405,6 +417,7 @@ class SettingsDialog(QDialog):
         settings.minimum_buy_price_drop = (
             self.inputs["minimum_buy_price_drop"].value() / 100
         )
+        settings.chart_range_eur = self.inputs["chart_range_eur"].value()
 
 
 class MainWindow(QMainWindow):
@@ -1300,6 +1313,7 @@ class MainWindow(QMainWindow):
             self.account.trades,
             self.account.lots,
             (stop, target),
+            self.settings.chart_range_eur,
         )
 
     def _save(self) -> None:

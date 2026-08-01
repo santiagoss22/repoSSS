@@ -40,6 +40,7 @@ class BotSettings:
     drawdown_reduce_size: float = 0.05
     drawdown_block_buys: float = 0.08
     drawdown_halt: float = 0.10
+    chart_range_eur: float = 2_000.0
 
     def to_dict(self) -> dict:
         return asdict(self)
