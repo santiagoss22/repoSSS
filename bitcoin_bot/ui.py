@@ -736,6 +736,20 @@ class MainWindow(QMainWindow):
                 self.account.cooldown_remaining -= 1
             if self.account.buy_cooldown_remaining > 0:
                 self.account.buy_cooldown_remaining -= 1
+            if self.account.post_sale_cooldown_remaining > 0:
+                self.account.post_sale_cooldown_remaining -= 1
+            self.account.update_reentry_reference(
+                self.market.price,
+                self.settings.stable_reference_ticks,
+                self.settings.stable_reference_range,
+            )
+            rebound_failed = self.account.update_defensive_exit(
+                self.market.price,
+                technical.bearish_confirmation,
+                self.settings.stable_reference_ticks,
+                self.settings.stable_reference_range,
+                self.settings.rebound_from_floor,
+            )
 
             stopped, stop_kind = self.account.stopped_lots(
                 self.market.price,
@@ -752,6 +766,10 @@ class MainWindow(QMainWindow):
                     self.settings.slippage_rate,
                 )
                 self.account.cooldown_remaining = self.settings.cooldown_ticks
+                self.account.register_sale(
+                    self.market.price,
+                    self.settings.post_sale_cooldown_ticks,
+                )
                 self._append_trade()
                 self.bot_status_label.setText(f"Bot: {stop_kind} ejecutado")
                 self.decision_label.setText(
@@ -759,6 +777,45 @@ class MainWindow(QMainWindow):
                     f"{self.settings.cooldown_ticks} ciclos."
                 )
                 self._save()
+                self._refresh()
+                return
+
+            defensive = []
+            if (
+                self.account.bearish_confirmation_count
+                >= self.settings.bearish_confirmation_ticks
+            ):
+                defensive = self.account.losing_lots(
+                    self.market.price, self.settings.defensive_loss
+                )
+            if rebound_failed:
+                defensive_ids = {id(lot) for lot in defensive}
+                defensive.extend(
+                    lot for lot in self.account.lots
+                    if id(lot) not in defensive_ids
+                    and self.market.price
+                    < (lot.entry_price_eur or lot.cost_basis_eur / lot.bitcoin)
+                )
+            if defensive:
+                reason = (
+                    "Rebote fallido con EMA/MACD bajistas"
+                    if rebound_failed else
+                    "Venta defensiva: -3 % y tendencia bajista"
+                )
+                self.account.sell_selected_lots(
+                    defensive,
+                    self.market.price,
+                    reason,
+                    self.settings.fee_rate,
+                    self.settings.slippage_rate,
+                )
+                self.account.register_sale(
+                    self.market.price,
+                    self.settings.post_sale_cooldown_ticks,
+                )
+                self._append_trade()
+                self._save()
+                self.bot_status_label.setText(f"Bot: {reason}")
                 self._refresh()
                 return
 
@@ -775,6 +832,10 @@ class MainWindow(QMainWindow):
                     f"Objetivo individual alcanzado ({len(profitable)} lote/s)",
                     fee_rate=self.settings.fee_rate,
                     slippage_rate=self.settings.slippage_rate,
+                )
+                self.account.register_sale(
+                    self.market.price,
+                    self.settings.post_sale_cooldown_ticks,
                 )
                 self._append_trade()
                 self._save()
@@ -798,19 +859,26 @@ class MainWindow(QMainWindow):
                 self.settings.minimum_buy_price_drop,
             )
             entry_confirmed = lower_entry or technical.ema_confirmation
+            reentry_allowed = self.account.post_sale_buy_allowed(
+                self.market.price,
+                self.settings.reentry_pullback,
+                technical.ema_confirmation,
+            )
             if (
                 action == "COMPRAR"
                 and not pause_reason
                 and self.account.cooldown_remaining == 0
                 and self.account.buy_cooldown_remaining == 0
                 and entry_confirmed
+                and reentry_allowed
                 and self.account.can_buy(
                     self.market.price,
                     fee_rate=self.settings.fee_rate,
                 )
             ):
                 reason = (
-                    "Precio 1,2 % bajo la última compra"
+                    f"Precio {self.settings.minimum_buy_price_drop:.1%} "
+                    "bajo la última compra"
                     if lower_entry else
                     "Confirmación técnica EMA y multi-indicador"
                 )
@@ -824,11 +892,15 @@ class MainWindow(QMainWindow):
                         f"{self.account.buy_cooldown_remaining} ciclos"
                         if self.account.buy_cooldown_remaining else
                         (
+                            "reentrada tras venta aún no confirmada"
+                            if not reentry_allowed else
+                            (
                             "el precio aún no ha bajado "
                             f"{self.settings.minimum_buy_price_drop:.1%} "
                             "desde la última compra"
                             if not entry_confirmed else
                             "no alcanza la compra mínima manteniendo la reserva"
+                            )
                         )
                     )
                 )
@@ -933,6 +1005,10 @@ class MainWindow(QMainWindow):
                 reason,
                 fee_rate=self.settings.fee_rate,
                 slippage_rate=self.settings.slippage_rate,
+            )
+            self.account.register_sale(
+                self.market.price,
+                self.settings.post_sale_cooldown_ticks,
             )
             self._append_trade()
             self._save()

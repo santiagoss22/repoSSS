@@ -75,6 +75,18 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
             account.cooldown_remaining -= 1
         if account.buy_cooldown_remaining > 0:
             account.buy_cooldown_remaining -= 1
+        if account.post_sale_cooldown_remaining > 0:
+            account.post_sale_cooldown_remaining -= 1
+        account.update_reentry_reference(
+            price, settings.stable_reference_ticks,
+            settings.stable_reference_range,
+        )
+        technical = strategy.evaluate(observed, observed, [])
+        rebound_failed = account.update_defensive_exit(
+            price, technical.bearish_confirmation,
+            settings.stable_reference_ticks, settings.stable_reference_range,
+            settings.rebound_from_floor,
+        )
         stopped, stop_kind = account.stopped_lots(
             price,
             settings.stop_loss,
@@ -87,6 +99,28 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
                 settings.fee_rate, settings.slippage_rate,
             )
             account.cooldown_remaining = settings.cooldown_ticks
+            account.register_sale(price, settings.post_sale_cooldown_ticks)
+            continue
+        defensive = []
+        if (
+            account.bearish_confirmation_count
+            >= settings.bearish_confirmation_ticks
+        ):
+            defensive = account.losing_lots(price, settings.defensive_loss)
+        if rebound_failed:
+            selected_ids = {id(lot) for lot in defensive}
+            defensive.extend(
+                lot for lot in account.lots
+                if id(lot) not in selected_ids
+                and price < (lot.entry_price_eur or lot.cost_basis_eur / lot.bitcoin)
+            )
+        if defensive:
+            account.sell_selected_lots(
+                defensive, price, "Venta defensiva",
+                settings.fee_rate, settings.slippage_rate,
+            )
+            account.register_sale(price, settings.post_sale_cooldown_ticks)
+            continue
         profitable = account.profitable_lots(
             price,
             settings.sell_gain,
@@ -101,16 +135,21 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
                 fee_rate=settings.fee_rate,
                 slippage_rate=settings.slippage_rate,
             )
-        technical = strategy.evaluate(observed, observed, [])
+            account.register_sale(price, settings.post_sale_cooldown_ticks)
+            continue
         action = technical.action
         entry_confirmed = account.price_allows_next_buy(
             price, settings.minimum_buy_price_drop
         ) or technical.ema_confirmation
+        reentry_allowed = account.post_sale_buy_allowed(
+            price, settings.reentry_pullback, technical.ema_confirmation
+        )
         if (
             action == "COMPRAR"
             and account.cooldown_remaining == 0
             and account.buy_cooldown_remaining == 0
             and entry_confirmed
+            and reentry_allowed
             and account.can_buy(price, fee_rate=settings.fee_rate)
         ):
             value = account.fixed_initial_buy_value(

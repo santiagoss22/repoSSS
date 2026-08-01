@@ -47,6 +47,14 @@ class PaperAccount:
     lots: list[PositionLot] = field(default_factory=list)
     cooldown_remaining: int = 0
     buy_cooldown_remaining: int = 0
+    post_sale_cooldown_remaining: int = 0
+    last_sale_price_eur: float = 0.0
+    reentry_reference_eur: float = 0.0
+    reentry_prices: list[float] = field(default_factory=list)
+    bearish_confirmation_count: int = 0
+    floor_prices: list[float] = field(default_factory=list)
+    floor_reference_eur: float = 0.0
+    rebound_peak_eur: float = 0.0
 
     def equity(self, price_eur: float) -> float:
         return self.cash_eur + self.bitcoin * price_eur
@@ -173,6 +181,80 @@ class PaperAccount:
         if latest_entry <= 0:
             latest_entry = self.lots[-1].cost_basis_eur / self.lots[-1].bitcoin
         return price_eur <= latest_entry * (1 - minimum_drop)
+
+    def register_sale(self, price_eur: float, cooldown_ticks: int) -> None:
+        self.last_sale_price_eur = price_eur
+        self.reentry_reference_eur = price_eur
+        self.post_sale_cooldown_remaining = cooldown_ticks
+        self.reentry_prices.clear()
+
+    def update_reentry_reference(
+        self, price_eur: float, stable_ticks: int, stable_range: float
+    ) -> None:
+        if self.last_sale_price_eur <= 0:
+            return
+        self.reentry_prices.append(price_eur)
+        self.reentry_prices = self.reentry_prices[-stable_ticks:]
+        if len(self.reentry_prices) < stable_ticks:
+            return
+        ordered = sorted(self.reentry_prices)
+        median = ordered[len(ordered) // 2]
+        if (max(ordered) - min(ordered)) / median <= stable_range:
+            self.reentry_reference_eur = max(
+                self.reentry_reference_eur, median
+            )
+
+    def post_sale_buy_allowed(
+        self, price_eur: float, pullback: float, technical_rebound: bool
+    ) -> bool:
+        if self.last_sale_price_eur <= 0:
+            return True
+        reference = self.reentry_reference_eur or self.last_sale_price_eur
+        return (
+            self.post_sale_cooldown_remaining == 0
+            and price_eur <= reference * (1 - pullback)
+            and technical_rebound
+        )
+
+    def losing_lots(self, price_eur: float, loss: float) -> list[PositionLot]:
+        return [
+            lot for lot in self.lots
+            if price_eur <= (lot.entry_price_eur or lot.cost_basis_eur / lot.bitcoin)
+            * (1 - loss)
+        ]
+
+    def update_defensive_exit(
+        self,
+        price_eur: float,
+        bearish: bool,
+        stable_ticks: int,
+        stable_range: float,
+        rebound: float,
+    ) -> bool:
+        self.bearish_confirmation_count = (
+            self.bearish_confirmation_count + 1 if bearish else 0
+        )
+        if not self.lots:
+            self.floor_prices.clear()
+            self.floor_reference_eur = self.rebound_peak_eur = 0.0
+            return False
+        self.floor_prices.append(price_eur)
+        self.floor_prices = self.floor_prices[-stable_ticks:]
+        if len(self.floor_prices) == stable_ticks:
+            ordered = sorted(self.floor_prices)
+            median = ordered[len(ordered) // 2]
+            if (max(ordered) - min(ordered)) / median <= stable_range:
+                self.floor_reference_eur = median
+                self.rebound_peak_eur = max(self.rebound_peak_eur, price_eur)
+        if self.floor_reference_eur > 0:
+            self.rebound_peak_eur = max(self.rebound_peak_eur, price_eur)
+        return (
+            bearish
+            and self.floor_reference_eur > 0
+            and self.rebound_peak_eur
+            >= self.floor_reference_eur * (1 + rebound)
+            and price_eur < self.rebound_peak_eur
+        )
 
     def risk_sized_value(
         self,

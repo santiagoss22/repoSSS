@@ -18,6 +18,34 @@ from bitcoin_bot.technical_strategy import MultiIndicatorStrategy, atr_percent, 
 
 
 class PaperAccountTests(unittest.TestCase):
+    def test_post_sale_reference_moves_up_after_stable_market(self):
+        account = PaperAccount()
+        account.register_sale(100_000, cooldown_ticks=30)
+        for price in [102_500 + (index % 3 - 1) * 100 for index in range(20)]:
+            account.update_reentry_reference(price, 20, 0.008)
+        self.assertGreaterEqual(account.reentry_reference_eur, 102_500)
+        account.post_sale_cooldown_remaining = 0
+        self.assertTrue(account.post_sale_buy_allowed(100_400, 0.02, True))
+        self.assertFalse(account.post_sale_buy_allowed(100_400, 0.02, False))
+
+    def test_defensive_loss_selects_only_affected_lot(self):
+        account = PaperAccount(max_position_fraction=0.80)
+        account.buy(100_000, 2_000, "lote caro", max_fraction=0.80)
+        account.buy(90_000, 2_000, "lote barato", max_fraction=0.80)
+        selected = account.losing_lots(96_500, 0.03)
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0].entry_price_eur, 100_000)
+
+    def test_failed_rebound_is_detected_after_stable_floor(self):
+        account = PaperAccount()
+        account.buy(100_000, 2_000, "lote")
+        for price in [97_000 + (index % 3 - 1) * 50 for index in range(20)]:
+            account.update_defensive_exit(price, False, 20, 0.008, 0.015)
+        account.update_defensive_exit(98_600, False, 20, 0.008, 0.015)
+        self.assertTrue(
+            account.update_defensive_exit(98_400, True, 20, 0.008, 0.015)
+        )
+
     def test_fixed_initial_twenty_percent_spends_exactly_two_thousand(self):
         account = PaperAccount(max_position_fraction=0.80)
         for index in range(4):
