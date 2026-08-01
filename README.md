@@ -30,6 +30,9 @@ con dinero ficticio. No se conecta a ningún exchange y no puede mover dinero re
   no compra porque solo quedarían 200 € disponibles sobre la reserva.
 - Exposición máxima predeterminada del 80 % de la cartera.
 - Máximo estricto de cuatro lotes abiertos simultáneamente.
+- Presupuesto máximo de riesgo abierto del 4 %: antes de comprar proyecta la
+  pérdida conjunta de todos los stops, incluyendo costes.
+- Compra automática de 2.000 € con volatilidad normal y 1.000 € cuando ATR es alto.
 - Calcula el coste medio real de las compras.
 - Simula comisiones y deslizamiento tanto al comprar como al vender.
 - El objetivo de venta se calcula después de esos costes.
@@ -44,10 +47,16 @@ con dinero ficticio. No se conecta a ningún exchange y no puede mover dinero re
   menos dos indicadores confirman la señal.
 - Cooldown de 15 ciclos después de una salida por pérdida.
 - Pausa automática al perder un 2 % diario o un 4 % semanal.
+- Tras dos pérdidas consecutivas espera 120 ciclos; tras tres bloquea nuevas
+  compras hasta reiniciar o revisar la simulación.
+- Desde un drawdown del 5 % reduce las compras; desde el 8 % las bloquea y al
+  10 % exige revisión manual.
 - Guarda automáticamente la cartera, el historial y la configuración.
 - Permite cambiar porcentajes, ciclos, costes, reserva y protección desde la app.
 - Ejecuta backtests sobre hasta tres años de velas diarias públicas BTC-EUR de Coinbase.
 - Compara la estrategia con comprar y mantener, y muestra aciertos y rentabilidad anualizada.
+- Muestra ganancia y pérdida medias, profit factor, racha máxima de pérdidas y
+  una validación separada sobre el último 30 % del histórico.
 - Marca compras y ventas directamente sobre el gráfico de precios.
 - Mantiene en el lateral el precio de cada lote abierto y su diferencia porcentual.
 - Explica por qué el bot compra, espera o bloquea una operación.
