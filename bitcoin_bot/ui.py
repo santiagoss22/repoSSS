@@ -189,9 +189,26 @@ class PriceChart(QWidget):
         occupied: list[float] = []
         for level, frozen in self.purchase_levels:
             raw_y = 12 + (high - level) * height / spread
-            y = min(max(raw_y, 14), self.height() - 14)
-            while any(abs(y - previous) < 17 for previous in occupied):
-                y = min(y + 17, self.height() - 14)
+            top, bottom, separation = 14, self.height() - 14, 17
+            preferred = min(max(raw_y, top), bottom)
+            candidates = [preferred]
+            candidates.extend(
+                float(position)
+                for position in range(top, max(top, bottom) + 1, separation)
+            )
+            available = [
+                candidate
+                for candidate in candidates
+                if all(
+                    abs(candidate - previous) >= separation
+                    for previous in occupied
+                )
+            ]
+            if not available:
+                # No hay espacio para otra etiqueta legible. La línea del lote
+                # sigue dibujada, pero se evita solapar texto o bloquear el pintado.
+                continue
+            y = min(available, key=lambda candidate: abs(candidate - preferred))
             occupied.append(y)
             difference = (current / level - 1) * 100
             arrow = "↑" if raw_y < 14 else "↓" if raw_y > self.height() - 14 else ""
