@@ -38,11 +38,10 @@ from bitcoin_bot.config import BotSettings
 from bitcoin_bot.market_data import Candle, LiveMarketWorker
 from bitcoin_bot.persistence import load_state, save_state
 from bitcoin_bot.simulator import (
-    MovingAverageStrategy,
     PaperAccount,
     PriceSimulator,
-    TrendConfirmation,
 )
+from bitcoin_bot.technical_strategy import MultiIndicatorStrategy
 
 
 class KeepAwakeManager:
@@ -284,19 +283,6 @@ class SettingsDialog(QDialog):
         form.addRow("Compra mínima", minimum_trade)
         self.inputs["minimum_trade_eur"] = minimum_trade
 
-        cycles = QSpinBox()
-        cycles.setRange(1, 20)
-        cycles.setValue(settings.confirmation_ticks)
-        form.addRow("Ciclos de confirmación", cycles)
-        self.inputs["confirmation_ticks"] = cycles
-
-        expiry = QSpinBox()
-        expiry.setRange(15, 3_600)
-        expiry.setSuffix(" s")
-        expiry.setValue(settings.reference_expiry_ticks)
-        form.addRow("Caducidad de referencia", expiry)
-        self.inputs["reference_expiry_ticks"] = expiry
-
         cooldown = QSpinBox()
         cooldown.setRange(0, 600)
         cooldown.setValue(settings.cooldown_ticks)
@@ -323,12 +309,6 @@ class SettingsDialog(QDialog):
             setattr(settings, name, self.inputs[name].value() / 100)
         settings.minimum_cash_eur = self.inputs["minimum_cash_eur"].value()
         settings.minimum_trade_eur = self.inputs["minimum_trade_eur"].value()
-        settings.confirmation_ticks = int(
-            self.inputs["confirmation_ticks"].value()
-        )
-        settings.reference_expiry_ticks = int(
-            self.inputs["reference_expiry_ticks"].value()
-        )
         settings.cooldown_ticks = int(self.inputs["cooldown_ticks"].value())
 
 
@@ -359,8 +339,8 @@ class MainWindow(QMainWindow):
         for lot in self.account.lots:
             lot.frozen = False
         self.market = PriceSimulator(initial_price=self.account.last_market_price_eur)
-        self.strategy = MovingAverageStrategy()
-        self.confirmation = self._new_confirmation()
+        self.strategy = MultiIndicatorStrategy()
+        self.current_size_factor = 1.0
         self.keep_awake = KeepAwakeManager()
         self.prices = [self.market.price]
         self.market_worker: LiveMarketWorker | None = None
@@ -563,18 +543,10 @@ class MainWindow(QMainWindow):
                 "Energía: comportamiento normal del Mac"
             )
 
-    def _new_confirmation(self) -> TrendConfirmation:
-        return TrendConfirmation(
-            confirmation_ticks=self.settings.confirmation_ticks,
-            sell_gain=self.settings.sell_gain,
-            reference_expiry_ticks=self.settings.reference_expiry_ticks,
-        )
-
     def _change_market_source(self) -> None:
         source = self.source_combo.currentData()
         self._stop_market_worker()
         self.market_mode = source
-        self.confirmation.reset()
         self.live_signal_pending = False
         if source == "simulated":
             self.timeframe_combo.setEnabled(False)
@@ -657,16 +629,30 @@ class MainWindow(QMainWindow):
     def _tick(self) -> None:
         live = self.market_mode != "simulated"
         if live:
-            strategy_prices = [
-                candle.close for candle in self.live_histories.get("1h", [])
+            hourly_candles = self.live_histories.get("1h", [])
+            strategy_prices = [candle.close for candle in hourly_candles]
+            five_prices = [
+                candle.close for candle in self.live_histories.get("5m", [])
             ]
+            daily_prices = [
+                candle.close for candle in self.live_histories.get("1d", [])
+            ]
+            highs = [candle.high for candle in hourly_candles]
+            lows = [candle.low for candle in hourly_candles]
             allow_strategy = self.live_signal_pending
             self.live_signal_pending = False
         else:
             self.prices.append(self.market.tick())
             strategy_prices = self.prices
+            five_prices = self.prices
+            daily_prices = []
+            highs = lows = None
             allow_strategy = True
-        signal = self.strategy.signal(strategy_prices)
+        technical = self.strategy.evaluate(
+            strategy_prices, five_prices, daily_prices, highs, lows
+        )
+        signal = technical.action if allow_strategy else "ESPERAR"
+        self.current_size_factor = technical.size_factor
         signal_colors = {
             "COMPRAR": "#34d399",
             "VENDER": "#f87171",
@@ -697,7 +683,6 @@ class MainWindow(QMainWindow):
                 )
                 self.account.cooldown_remaining = self.settings.cooldown_ticks
                 self._append_trade()
-                self.confirmation.reset()
                 self.bot_status_label.setText(f"Bot: {stop_kind} ejecutado")
                 self.decision_label.setText(
                     f"Decisión actual: venta de protección; cooldown de "
@@ -723,22 +708,20 @@ class MainWindow(QMainWindow):
                 )
                 self._append_trade()
                 self._save()
-                self.confirmation.reset()
                 self.bot_status_label.setText(
                     f"Bot: venta de {len(profitable)} lote/s rentable/s"
                 )
                 self._refresh()
                 return
             if allow_strategy:
-                action, status = self.confirmation.update(
-                    self.market.price, False
-                )
+                action, status = technical.action, technical.status
             else:
                 action, status = "ESPERAR", "Esperando cierre de vela 1h"
             pause_reason = self._risk_pause_reason() or self._market_pause_reason()
             self.bot_status_label.setText(f"Bot: {status}")
             self.decision_label.setText(
-                "Decisión actual: " + self._decision_explanation(action, status)
+                f"Decisión actual: {self._decision_explanation(action, status)} "
+                f"RSI {technical.rsi:.1f} · ATR {technical.volatility:.2%}."
             )
             if (
                 action == "COMPRAR"
@@ -761,7 +744,6 @@ class MainWindow(QMainWindow):
                     f"Decisión actual: no compra por {reason}."
                 )
         else:
-            self.confirmation.reset()
             self.bot_status_label.setText("Bot: desactivado")
             self.decision_label.setText(
                 "Decisión actual: bot desactivado; solo se permiten operaciones manuales."
@@ -809,6 +791,7 @@ class MainWindow(QMainWindow):
             self.settings.fee_rate,
             self.settings.slippage_rate,
         )
+        value *= self.current_size_factor
         self._buy(
             reason,
             self.settings.max_position_fraction,
@@ -871,7 +854,6 @@ class MainWindow(QMainWindow):
             self.account.minimum_cash_eur = self.settings.minimum_cash_eur
             self.account.minimum_trade_eur = self.settings.minimum_trade_eur
             self.account.max_position_fraction = self.settings.max_position_fraction
-            self.confirmation = self._new_confirmation()
             self._save()
             self._refresh()
 
@@ -895,8 +877,7 @@ class MainWindow(QMainWindow):
             minimum_trade_eur=self.settings.minimum_trade_eur,
         )
         self.market = PriceSimulator(initial_price=90_000.0)
-        self.strategy = MovingAverageStrategy()
-        self.confirmation = self._new_confirmation()
+        self.strategy = MultiIndicatorStrategy()
         self.prices = [self.market.price]
         self.table.setRowCount(0)
         self.signal_label.setText("● ESPERAR")
