@@ -73,6 +73,7 @@ class TechnicalSignal:
     rsi: float
     volatility: float
     size_factor: float
+    ema_confirmation: bool = False
 
 
 class MultiIndicatorStrategy:
@@ -125,7 +126,7 @@ class MultiIndicatorStrategy:
         if score >= 2 and confirmation:
             return TechnicalSignal(
                 "COMPRAR", f"{matched} · confirmación EMA 5m", score,
-                current_rsi[-1], volatility, size_factor,
+                current_rsi[-1], volatility, size_factor, True,
             )
         return TechnicalSignal(
             "ESPERAR", f"{trend_text} · {score}/3 condiciones", score,

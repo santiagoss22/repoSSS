@@ -793,21 +793,28 @@ class MainWindow(QMainWindow):
                 f"Decisión actual: {self._decision_explanation(action, status)} "
                 f"RSI {technical.rsi:.1f} · ATR {technical.volatility:.2%}."
             )
+            lower_entry = self.account.price_allows_next_buy(
+                self.market.price,
+                self.settings.minimum_buy_price_drop,
+            )
+            entry_confirmed = lower_entry or technical.ema_confirmation
             if (
                 action == "COMPRAR"
                 and not pause_reason
                 and self.account.cooldown_remaining == 0
                 and self.account.buy_cooldown_remaining == 0
-                and self.account.price_allows_next_buy(
-                    self.market.price,
-                    self.settings.minimum_buy_price_drop,
-                )
+                and entry_confirmed
                 and self.account.can_buy(
                     self.market.price,
                     fee_rate=self.settings.fee_rate,
                 )
             ):
-                self._buy_risk_sized("Precio bajo referencia")
+                reason = (
+                    "Precio 1,2 % bajo la última compra"
+                    if lower_entry else
+                    "Confirmación técnica EMA y multi-indicador"
+                )
+                self._buy_risk_sized(reason)
             elif action == "COMPRAR":
                 reason = pause_reason or (
                     f"cooldown: quedan {self.account.cooldown_remaining} ciclos"
@@ -820,10 +827,7 @@ class MainWindow(QMainWindow):
                             "el precio aún no ha bajado "
                             f"{self.settings.minimum_buy_price_drop:.1%} "
                             "desde la última compra"
-                            if not self.account.price_allows_next_buy(
-                                self.market.price,
-                                self.settings.minimum_buy_price_drop,
-                            ) else
+                            if not entry_confirmed else
                             "no alcanza la compra mínima manteniendo la reserva"
                         )
                     )

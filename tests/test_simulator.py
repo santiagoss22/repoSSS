@@ -334,9 +334,10 @@ class TechnicalIndicatorTests(unittest.TestCase):
         found = False
         for _ in range(200):
             prices.append(prices[-1] * (1 + generator.gauss(0, 0.01)))
-            found = found or MultiIndicatorStrategy().evaluate(
-                prices, prices, []
-            ).action == "COMPRAR"
+            signal = MultiIndicatorStrategy().evaluate(prices, prices, [])
+            if signal.action == "COMPRAR":
+                found = True
+                self.assertTrue(signal.ema_confirmation)
         self.assertTrue(found)
 
 

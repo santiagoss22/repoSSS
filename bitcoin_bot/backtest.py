@@ -103,13 +103,14 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
             )
         technical = strategy.evaluate(observed, observed, [])
         action = technical.action
+        entry_confirmed = account.price_allows_next_buy(
+            price, settings.minimum_buy_price_drop
+        ) or technical.ema_confirmation
         if (
             action == "COMPRAR"
             and account.cooldown_remaining == 0
             and account.buy_cooldown_remaining == 0
-            and account.price_allows_next_buy(
-                price, settings.minimum_buy_price_drop
-            )
+            and entry_confirmed
             and account.can_buy(price, fee_rate=settings.fee_rate)
         ):
             value = account.fixed_initial_buy_value(
