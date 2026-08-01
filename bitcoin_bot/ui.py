@@ -809,10 +809,19 @@ class MainWindow(QMainWindow):
             self.settings.fee_rate,
             self.settings.slippage_rate,
         )
-        self._buy(reason, self.settings.max_position_fraction, value)
+        self._buy(
+            reason,
+            self.settings.max_position_fraction,
+            value,
+            show_dialog=False,
+        )
 
     def _buy(
-        self, reason: str, fraction: float, requested_value: float | None = None
+        self,
+        reason: str,
+        fraction: float,
+        requested_value: float | None = None,
+        show_dialog: bool = True,
     ) -> None:
         try:
             self.account.minimum_cash_eur = self.settings.minimum_cash_eur
@@ -832,7 +841,13 @@ class MainWindow(QMainWindow):
             self._append_trade()
             self._save()
         except ValueError as error:
-            QMessageBox.information(self, "No se puede comprar", str(error))
+            if show_dialog:
+                QMessageBox.information(self, "No se puede comprar", str(error))
+            else:
+                self.bot_status_label.setText("Bot: compra omitida · continúa activo")
+                self.decision_label.setText(
+                    f"Decisión actual: {error} El bot seguirá vigilando el mercado."
+                )
         self._refresh()
 
     def _sell(self, reason: str) -> None:
