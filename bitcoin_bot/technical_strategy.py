@@ -74,6 +74,7 @@ class TechnicalSignal:
     volatility: float
     size_factor: float
     ema_confirmation: bool = False
+    bearish_confirmation: bool = False
 
 
 class MultiIndicatorStrategy:
@@ -115,20 +116,22 @@ class MultiIndicatorStrategy:
         fast = ema(five_minute, 9)
         slow = ema(five_minute, 21)
         confirmation = fast[-1] > slow[-1] or five_minute[-1] > fast[-1]
+        bearish_confirmation = fast[-1] < slow[-1] and histogram[-1] < 0
         volatility = atr_percent(hourly, hourly_highs, hourly_lows)
         size_factor = 0.0 if volatility >= 0.05 else 0.5 if volatility >= 0.03 else 1.0
         matched = ", ".join(name for name, valid in conditions.items() if valid) or "sin confirmaciones"
 
         if not trend_ok:
-            return TechnicalSignal("ESPERAR", trend_text, score, current_rsi[-1], volatility, 0.0)
+            return TechnicalSignal("ESPERAR", trend_text, score, current_rsi[-1], volatility, 0.0, False, bearish_confirmation)
         if size_factor == 0:
-            return TechnicalSignal("ESPERAR", "volatilidad extrema", score, current_rsi[-1], volatility, 0.0)
+            return TechnicalSignal("ESPERAR", "volatilidad extrema", score, current_rsi[-1], volatility, 0.0, False, bearish_confirmation)
         if score >= 2 and confirmation:
             return TechnicalSignal(
                 "COMPRAR", f"{matched} · confirmación EMA 5m", score,
-                current_rsi[-1], volatility, size_factor, True,
+                current_rsi[-1], volatility, size_factor, True, False,
             )
         return TechnicalSignal(
             "ESPERAR", f"{trend_text} · {score}/3 condiciones", score,
-            current_rsi[-1], volatility, size_factor,
+            current_rsi[-1], volatility, size_factor, False,
+            bearish_confirmation,
         )

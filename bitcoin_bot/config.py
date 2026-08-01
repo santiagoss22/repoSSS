@@ -14,13 +14,20 @@ class BotSettings:
     slippage_rate: float = 0.001
     risk_per_trade: float = 0.01
     stop_loss: float = 0.06
-    trailing_activation: float = 0.07
-    trailing_distance: float = 0.04
+    trailing_activation: float = 0.025
+    trailing_distance: float = 0.015
     daily_loss_limit: float = 0.02
     weekly_loss_limit: float = 0.04
     cooldown_ticks: int = 15
     buy_spacing_ticks: int = 15
     minimum_buy_price_drop: float = 0.012
+    post_sale_cooldown_ticks: int = 30
+    reentry_pullback: float = 0.02
+    stable_reference_ticks: int = 20
+    stable_reference_range: float = 0.008
+    defensive_loss: float = 0.03
+    bearish_confirmation_ticks: int = 5
+    rebound_from_floor: float = 0.015
     max_position_fraction: float = 0.80
     max_open_lots: int = 4
     max_spread: float = 0.002
@@ -46,5 +53,9 @@ class BotSettings:
             values["sell_gain"] = 0.04
         if values.get("max_position_fraction") == 0.60:
             values["max_position_fraction"] = 0.80
+        if values.get("trailing_activation") == 0.07:
+            values["trailing_activation"] = 0.025
+        if values.get("trailing_distance") == 0.04:
+            values["trailing_distance"] = 0.015
         allowed = cls.__dataclass_fields__
         return cls(**{key: value for key, value in values.items() if key in allowed})

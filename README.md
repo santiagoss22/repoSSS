@@ -19,22 +19,29 @@ con dinero ficticio. No se conecta a ningún exchange y no puede mover dinero re
 - Filtra la tendencia diaria con EMA 50/200 y busca retrocesos mediante RSI,
   Bandas de Bollinger y mejora del MACD en velas de una hora.
 - Exige al menos dos de tres condiciones y confirmación EMA 9/21 en cinco minutos.
-- Calcula ATR para reducir la compra al 50 % con volatilidad alta y bloquearla
-  con volatilidad extrema.
+- Calcula ATR y bloquea señales con volatilidad extrema.
 - Cada lote se vende automáticamente al alcanzar el take-profit neto configurado
-  (12 % de forma predeterminada).
-- Botones de compra manual del 20 % y del 50 %.
-- El tamaño automático se calcula para arriesgar como máximo el 1 % del patrimonio.
+  (4 % de forma predeterminada).
+- Botones de compra manual del 20 % inicial y del 50 %.
+- Cada compra automática reserva exactamente 2.000 €, comisión incluida.
 - Puede efectuar compras sucesivas sin esperar a vender.
 - Conserva siempre un mínimo de 2.000 € en efectivo.
 - No realiza compras inferiores a 500 €; con 2.200 € de efectivo, por ejemplo,
   no compra porque solo quedarían 200 € disponibles sobre la reserva.
-- Exposición máxima predeterminada del 60 % de la cartera.
+- Exposición máxima predeterminada del 80 % de la cartera.
 - Máximo estricto de cuatro lotes abiertos simultáneamente.
 - Calcula el coste medio real de las compras.
 - Simula comisiones y deslizamiento tanto al comprar como al vender.
 - El objetivo de venta se calcula después de esos costes.
-- Stop-loss del 6 % por lote y trailing stop del 4 % cuando la ganancia alcanza 7 %.
+- Stop-loss del 6 % por lote y trailing stop del 1,5 % cuando la ganancia alcanza 2,5 %.
+- Venta defensiva del lote desde una pérdida del 3 % tras cinco confirmaciones
+  bajistas consecutivas de EMA y MACD.
+- Detecta un suelo estable durante 20 ciclos y vende un lote con pérdida si un
+  rebote mínimo del 1,5 % vuelve a girarse a la baja.
+- Tras vender espera 30 ciclos; permite reentrar después de un retroceso del 2 %
+  con confirmación técnica. Una consolidación superior actualiza la referencia.
+- Entre compras espera 15 ciclos y admite entradas más altas cuando EMA y al
+  menos dos indicadores confirman la señal.
 - Cooldown de 15 ciclos después de una salida por pérdida.
 - Pausa automática al perder un 2 % diario o un 4 % semanal.
 - Guarda automáticamente la cartera, el historial y la configuración.
