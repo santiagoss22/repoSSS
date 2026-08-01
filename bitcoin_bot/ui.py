@@ -5,12 +5,14 @@ from pathlib import Path
 import os
 import subprocess
 import sys
+import time
 
 from PySide6.QtCore import QStandardPaths, QTimer, Qt
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -33,6 +35,7 @@ from PySide6.QtWidgets import (
 
 from bitcoin_bot.backtest import download_coinbase_daily_prices, run_backtest
 from bitcoin_bot.config import BotSettings
+from bitcoin_bot.market_data import Candle, LiveMarketWorker
 from bitcoin_bot.persistence import load_state, save_state
 from bitcoin_bot.simulator import (
     MovingAverageStrategy,
@@ -253,6 +256,7 @@ class SettingsDialog(QDialog):
             "max_position_fraction", "Exposición máxima",
             settings.max_position_fraction, 100
         )
+        percentage("max_spread", "Spread máximo", settings.max_spread, 5)
         percentage(
             "fee_rate",
             "Comisión por operación",
@@ -314,6 +318,7 @@ class SettingsDialog(QDialog):
             "risk_per_trade", "stop_loss", "trailing_activation",
             "trailing_distance", "daily_loss_limit", "weekly_loss_limit",
             "max_position_fraction",
+            "max_spread",
         ):
             setattr(settings, name, self.inputs[name].value() / 100)
         settings.minimum_cash_eur = self.inputs["minimum_cash_eur"].value()
@@ -333,6 +338,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Bitcoin Paper Bot")
         self.resize(1050, 760)
         data_dir = Path(QStandardPaths.writableLocation(QStandardPaths.AppDataLocation))
+        self.data_dir = data_dir
         self.state_path = data_dir / "paper_bot_state.json"
         reset_marker = data_dir / "reset_on_next_launch"
         try:
@@ -357,6 +363,14 @@ class MainWindow(QMainWindow):
         self.confirmation = self._new_confirmation()
         self.keep_awake = KeepAwakeManager()
         self.prices = [self.market.price]
+        self.market_worker: LiveMarketWorker | None = None
+        self.market_mode = "simulated"
+        self.live_histories: dict[str, list[Candle]] = {}
+        self.live_signal_pending = False
+        self.last_live_update = 0.0
+        self.live_bid = 0.0
+        self.live_ask = 0.0
+        self.live_volume_1h = 0.0
 
         self.brand_icon = QLabel("₿")
         self.brand_icon.setObjectName("brandIcon")
@@ -369,6 +383,17 @@ class MainWindow(QMainWindow):
         self.signal_label = QLabel("● ESPERAR")
         self.signal_label.setObjectName("signalBadge")
         self.signal_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.source_combo = QComboBox()
+        self.source_combo.addItem("Mercado simulado", "simulated")
+        self.source_combo.addItem("Binance · BTC/EUR", "binance")
+        self.source_combo.addItem("Coinbase · BTC/EUR", "coinbase")
+        self.timeframe_combo = QComboBox()
+        for timeframe in ("5m", "1h", "1d"):
+            self.timeframe_combo.addItem(timeframe, timeframe)
+        self.timeframe_combo.setCurrentText("1h")
+        self.timeframe_combo.setEnabled(False)
+        self.connection_label = QLabel("● Simulación local")
+        self.connection_label.setObjectName("connectionStatus")
         self.bot_status_label = QLabel("Bot: esperando tendencia")
         self.bot_status_label.setObjectName("botStatus")
         self.risk_status_label = QLabel("Riesgo: sin posiciones abiertas")
@@ -428,6 +453,9 @@ class MainWindow(QMainWindow):
         market_header = QHBoxLayout()
         market_header.addWidget(self.price_label)
         market_header.addStretch()
+        market_header.addWidget(self.connection_label)
+        market_header.addWidget(self.source_combo)
+        market_header.addWidget(self.timeframe_combo)
         market_header.addWidget(self.signal_label)
 
         controls = QHBoxLayout()
@@ -510,6 +538,8 @@ class MainWindow(QMainWindow):
         self.settings_button.clicked.connect(self._open_settings)
         self.reset_button.clicked.connect(self._reset_simulation)
         self.backtest_button.clicked.connect(self._run_backtest)
+        self.source_combo.currentIndexChanged.connect(self._change_market_source)
+        self.timeframe_combo.currentTextChanged.connect(self._change_timeframe)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
@@ -540,9 +570,103 @@ class MainWindow(QMainWindow):
             reference_expiry_ticks=self.settings.reference_expiry_ticks,
         )
 
+    def _change_market_source(self) -> None:
+        source = self.source_combo.currentData()
+        self._stop_market_worker()
+        self.market_mode = source
+        self.confirmation.reset()
+        self.live_signal_pending = False
+        if source == "simulated":
+            self.timeframe_combo.setEnabled(False)
+            self.connection_label.setText("● Simulación local")
+            self.connection_label.setStyleSheet("color: #94a3b8;")
+            self.prices = [self.market.price]
+            self._refresh()
+            return
+        self.timeframe_combo.setEnabled(True)
+        self.last_live_update = 0.0
+        self.connection_label.setText("● Conectando…")
+        self.connection_label.setStyleSheet("color: #fbbf24;")
+        self.market_worker = LiveMarketWorker(
+            source,
+            "BTC/EUR",
+            self.data_dir / "market_candles.sqlite",
+            self,
+        )
+        self.market_worker.ticker.connect(self._on_live_ticker)
+        self.market_worker.candle_closed.connect(self._on_live_candle)
+        self.market_worker.history_ready.connect(self._on_live_history)
+        self.market_worker.status.connect(self._on_market_status)
+        self.market_worker.start()
+
+    def _stop_market_worker(self) -> None:
+        if self.market_worker is not None:
+            self.market_worker.stop()
+            self.market_worker = None
+
+    def _on_live_ticker(self, ticker: dict) -> None:
+        self.market.price = ticker["last"]
+        self.live_bid = ticker["bid"]
+        self.live_ask = ticker["ask"]
+        self.last_live_update = time.time()
+        updated = datetime.fromtimestamp(ticker["timestamp"] / 1000).strftime("%H:%M:%S")
+        self.connection_label.setText(f"● En vivo · {updated}")
+        self.connection_label.setStyleSheet("color: #34d399;")
+        self.connection_label.setToolTip(
+            f"Bid {self.live_bid:,.2f} € · Ask {self.live_ask:,.2f} €"
+        )
+        self._refresh()
+
+    def _on_live_history(self, histories: dict) -> None:
+        self.live_histories = histories
+        self._change_timeframe(self.timeframe_combo.currentText())
+
+    def _on_live_candle(self, timeframe: str, candle: Candle) -> None:
+        candles = self.live_histories.setdefault(timeframe, [])
+        if not candles or candles[-1].timestamp_ms < candle.timestamp_ms:
+            candles.append(candle)
+        else:
+            candles[-1] = candle
+        self.live_histories[timeframe] = candles[-1000:]
+        if timeframe == "1h":
+            self.live_signal_pending = True
+            self.live_volume_1h = candle.volume
+        if timeframe == self.timeframe_combo.currentText():
+            self.prices = [item.close for item in candles]
+            self._refresh()
+
+    def _on_market_status(self, status: str, detail: str) -> None:
+        colors = {"LIVE": "#34d399", "CONNECTING": "#fbbf24",
+                  "RECONNECTING": "#fbbf24", "ERROR": "#f87171"}
+        labels = {"LIVE": "Datos en vivo", "CONNECTING": detail,
+                  "RECONNECTING": "Reconectando", "ERROR": "Sin conexión"}
+        self.connection_label.setText(f"● {labels.get(status, detail)}")
+        self.connection_label.setToolTip(detail)
+        self.connection_label.setStyleSheet(
+            f"color: {colors.get(status, '#94a3b8')};"
+        )
+
+    def _change_timeframe(self, timeframe: str) -> None:
+        if self.market_mode == "simulated":
+            return
+        candles = self.live_histories.get(timeframe, [])
+        if candles:
+            self.prices = [candle.close for candle in candles]
+            self._refresh()
+
     def _tick(self) -> None:
-        self.prices.append(self.market.tick())
-        signal = self.strategy.signal(self.prices)
+        live = self.market_mode != "simulated"
+        if live:
+            strategy_prices = [
+                candle.close for candle in self.live_histories.get("1h", [])
+            ]
+            allow_strategy = self.live_signal_pending
+            self.live_signal_pending = False
+        else:
+            self.prices.append(self.market.tick())
+            strategy_prices = self.prices
+            allow_strategy = True
+        signal = self.strategy.signal(strategy_prices)
         signal_colors = {
             "COMPRAR": "#34d399",
             "VENDER": "#f87171",
@@ -605,11 +729,13 @@ class MainWindow(QMainWindow):
                 )
                 self._refresh()
                 return
-            action, status = self.confirmation.update(
-                self.market.price,
-                False,
-            )
-            pause_reason = self._risk_pause_reason()
+            if allow_strategy:
+                action, status = self.confirmation.update(
+                    self.market.price, False
+                )
+            else:
+                action, status = "ESPERAR", "Esperando cierre de vela 1h"
+            pause_reason = self._risk_pause_reason() or self._market_pause_reason()
             self.bot_status_label.setText(f"Bot: {status}")
             self.decision_label.setText(
                 "Decisión actual: " + self._decision_explanation(action, status)
@@ -661,6 +787,18 @@ class MainWindow(QMainWindow):
             return "límite de pérdida diaria alcanzado"
         if weekly >= self.account.initial_cash_eur * self.settings.weekly_loss_limit:
             return "límite de pérdida semanal alcanzado"
+        return ""
+
+    def _market_pause_reason(self) -> str:
+        if self.market_mode == "simulated":
+            return ""
+        if not self.last_live_update or time.time() - self.last_live_update > 30:
+            return "datos de mercado desactualizados"
+        if self.live_bid > 0 and self.live_ask > 0:
+            midpoint = (self.live_bid + self.live_ask) / 2
+            spread = (self.live_ask - self.live_bid) / midpoint
+            if spread > self.settings.max_spread:
+                return f"spread demasiado alto ({spread:.2%})"
         return ""
 
     def _buy_risk_sized(self, reason: str) -> None:
@@ -859,6 +997,16 @@ class MainWindow(QMainWindow):
             f"Riesgo: stop {stop_text} · objetivo {target_text} · "
             f"riesgo/operación {self.settings.risk_per_trade:.1%} · "
             f"cooldown {cooldown}"
+            + (
+                f" · spread {(self.live_ask - self.live_bid) / ((self.live_ask + self.live_bid) / 2):.2%}"
+                if self.market_mode != "simulated" and self.live_bid and self.live_ask
+                else ""
+            )
+            + (
+                f" · vol1h {self.live_volume_1h:,.1f} BTC"
+                if self.market_mode != "simulated" and self.live_volume_1h
+                else ""
+            )
             + (f" · PAUSADO: {pause}" if pause else "")
         )
         now = datetime.now()
@@ -885,6 +1033,7 @@ class MainWindow(QMainWindow):
             pass
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        self._stop_market_worker()
         self.keep_awake.stop()
         self._save()
         event.accept()
@@ -927,6 +1076,11 @@ class MainWindow(QMainWindow):
             QLabel#riskStatus { color: #fbbf24; }
             QLabel#powerStatus { color: #86efac; }
             QLabel#decisionStatus { color: #cbd5e1; }
+            QLabel#connectionStatus { color: #94a3b8; font-weight: 700; }
+            QComboBox {
+                background: #172033; border: 1px solid #334155;
+                border-radius: 8px; color: #e5e7eb; padding: 7px 10px;
+            }
             QPushButton {
                 background: #334155; border: none; border-radius: 9px;
                 color: white; font-weight: 700; padding: 10px 15px;
