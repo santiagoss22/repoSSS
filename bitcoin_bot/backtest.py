@@ -107,6 +107,9 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
             action == "COMPRAR"
             and account.cooldown_remaining == 0
             and account.buy_cooldown_remaining == 0
+            and account.price_allows_next_buy(
+                price, settings.minimum_buy_price_drop
+            )
             and account.can_buy(price, fee_rate=settings.fee_rate)
         ):
             value = account.risk_sized_value(

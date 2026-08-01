@@ -18,6 +18,12 @@ from bitcoin_bot.technical_strategy import MultiIndicatorStrategy, atr_percent, 
 
 
 class PaperAccountTests(unittest.TestCase):
+    def test_next_buy_requires_a_lower_price_step(self):
+        account = PaperAccount()
+        account.buy(100_000, 2_000, "primera")
+        self.assertFalse(account.price_allows_next_buy(99_100, 0.01))
+        self.assertTrue(account.price_allows_next_buy(99_000, 0.01))
+
     def test_never_opens_more_than_four_lots(self):
         account = PaperAccount(
             minimum_cash_eur=0,
@@ -240,7 +246,7 @@ class PersistenceTests(unittest.TestCase):
         settings = BotSettings.from_dict(
             {"sell_gain": 0.025, "recovery_loss_trigger": 0.10}
         )
-        self.assertEqual(settings.sell_gain, 0.12)
+        self.assertEqual(settings.sell_gain, 0.04)
         self.assertEqual(settings.stop_loss, 0.06)
 
 

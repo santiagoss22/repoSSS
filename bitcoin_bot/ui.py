@@ -335,6 +335,15 @@ class SettingsDialog(QDialog):
         form.addRow("Separación entre compras (ciclos)", buy_spacing)
         self.inputs["buy_spacing_ticks"] = buy_spacing
 
+        buy_drop = QDoubleSpinBox()
+        buy_drop.setRange(0, 10)
+        buy_drop.setDecimals(2)
+        buy_drop.setSingleStep(0.10)
+        buy_drop.setSuffix(" %")
+        buy_drop.setValue(settings.minimum_buy_price_drop * 100)
+        form.addRow("Caída mínima para recomprar", buy_drop)
+        self.inputs["minimum_buy_price_drop"] = buy_drop
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.Save | QDialogButtonBox.Cancel
         )
@@ -358,6 +367,9 @@ class SettingsDialog(QDialog):
         settings.cooldown_ticks = int(self.inputs["cooldown_ticks"].value())
         settings.buy_spacing_ticks = int(
             self.inputs["buy_spacing_ticks"].value()
+        )
+        settings.minimum_buy_price_drop = (
+            self.inputs["minimum_buy_price_drop"].value() / 100
         )
 
 
@@ -780,6 +792,10 @@ class MainWindow(QMainWindow):
                 and not pause_reason
                 and self.account.cooldown_remaining == 0
                 and self.account.buy_cooldown_remaining == 0
+                and self.account.price_allows_next_buy(
+                    self.market.price,
+                    self.settings.minimum_buy_price_drop,
+                )
                 and self.account.can_buy(
                     self.market.price,
                     fee_rate=self.settings.fee_rate,
@@ -794,7 +810,16 @@ class MainWindow(QMainWindow):
                         "separación entre compras: quedan "
                         f"{self.account.buy_cooldown_remaining} ciclos"
                         if self.account.buy_cooldown_remaining else
-                        "no alcanza la compra mínima manteniendo la reserva"
+                        (
+                            "el precio aún no ha bajado "
+                            f"{self.settings.minimum_buy_price_drop:.1%} "
+                            "desde la última compra"
+                            if not self.account.price_allows_next_buy(
+                                self.market.price,
+                                self.settings.minimum_buy_price_drop,
+                            ) else
+                            "no alcanza la compra mínima manteniendo la reserva"
+                        )
                     )
                 )
                 self.bot_status_label.setText(f"Bot: compra pausada · {reason}")
