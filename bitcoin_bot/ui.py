@@ -8,7 +8,7 @@ import sys
 import time
 
 from PySide6.QtCore import QStandardPaths, QTimer, Qt
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -126,17 +126,18 @@ class PriceChart(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.fillRect(self.rect(), QColor("#0f172a"))
-        painter.setPen(QPen(QColor("#1e293b"), 1))
-        for division in range(1, 5):
-            y = int(self.height() * division / 5)
-            painter.drawLine(12, y, self.width() - 12, y)
         if len(self.prices) < 2:
             return
-        low, high = min(self.prices), max(self.prices)
+        current = self.prices[-1]
+        low = min(min(self.prices), current * 0.95)
+        high = max(max(self.prices), current * 1.05)
         spread = max(high - low, 1.0)
-        left, right = 132, 12
+        left, right = 132, 84
         width = max(self.width() - left - right, 1)
         height = max(self.height() - 24, 1)
+        plot_right = left + width
+        self._plot_right = plot_right
+        self._draw_y_axis(painter, low, high, left, plot_right, height)
         points = [
             (
                 left + index * width / (len(self.prices) - 1),
@@ -181,6 +182,33 @@ class PriceChart(QWidget):
             label = "C" if trade.side == "COMPRA" else "V"
             painter.drawText(int(x) + 7, int(y) - 7, label)
         self._draw_active_purchase_points(painter, points)
+
+    def _draw_y_axis(
+        self,
+        painter: QPainter,
+        low: float,
+        high: float,
+        left: int,
+        plot_right: float,
+        height: float,
+    ) -> None:
+        painter.setFont(QFont("Sans Serif", 9))
+        painter.setPen(QPen(QColor("#334155"), 1))
+        painter.drawLine(int(plot_right), 12, int(plot_right), self.height() - 12)
+        divisions = 5
+        for division in range(divisions + 1):
+            ratio = division / divisions
+            y = 12 + ratio * height
+            value = high - ratio * (high - low)
+            painter.setPen(QPen(QColor("#1e293b"), 1))
+            painter.drawLine(left, int(y), int(plot_right), int(y))
+            painter.setPen(QPen(QColor("#64748b"), 1))
+            painter.drawLine(int(plot_right), int(y), int(plot_right) + 5, int(y))
+            painter.drawText(
+                int(plot_right) + 8,
+                int(y) + 4,
+                f"{value:,.0f} €",
+            )
 
     def _draw_active_purchase_points(
         self, painter: QPainter, points: list[tuple[float, float]]
@@ -237,7 +265,12 @@ class PriceChart(QWidget):
             arrow = "↑" if raw_y < 14 else "↓" if raw_y > self.height() - 14 else ""
             color = QColor("#14b8a6" if frozen else "#22c55e")
             painter.setPen(QPen(color, 1, Qt.DashLine))
-            painter.drawLine(left - 10, int(y), self.width() - 12, int(y))
+            plot_right = int(
+                getattr(self, "_plot_right", self.width() - 12)
+            )
+            painter.drawLine(
+                left - 10, int(y), plot_right, int(y)
+            )
             painter.setPen(QPen(color, 1))
             state = "◆" if frozen else "C"
             text = f"{arrow}{state} {level:,.0f} €  {difference:+.1f}%"
@@ -257,9 +290,10 @@ class PriceChart(QWidget):
             y = min(max(raw_y, 14), self.height() - 14)
             color = QColor(color_name)
             painter.setPen(QPen(color, 1, Qt.DotLine))
-            painter.drawLine(left, int(y), self.width() - 12, int(y))
+            plot_right = int(getattr(self, "_plot_right", self.width() - 12))
+            painter.drawLine(left, int(y), plot_right, int(y))
             painter.setPen(QPen(color, 1))
-            painter.drawText(self.width() - 112, int(y) - 4, f"{label} {level:,.0f} €")
+            painter.drawText(plot_right - 104, int(y) - 4, f"{label} {level:,.0f} €")
 
 
 class SettingsDialog(QDialog):
