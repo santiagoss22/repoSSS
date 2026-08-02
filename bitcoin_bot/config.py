@@ -5,14 +5,14 @@ from dataclasses import asdict, dataclass
 
 @dataclass
 class BotSettings:
-    risk_management_version: int = 1
+    risk_management_version: int = 2
     manual_large_fraction: float = 0.50
     minimum_cash_eur: float = 2_000.0
     minimum_trade_eur: float = 500.0
     sell_gain: float = 0.04
     fee_rate: float = 0.006
     slippage_rate: float = 0.001
-    risk_per_trade: float = 0.01
+    risk_per_trade: float = 0.005
     stop_loss: float = 0.06
     trailing_activation: float = 0.025
     trailing_distance: float = 0.015
@@ -41,6 +41,21 @@ class BotSettings:
     drawdown_block_buys: float = 0.08
     drawdown_halt: float = 0.10
     chart_range_eur: float = 2_000.0
+    atr_stop_multiplier: float = 1.50
+    atr_target_multiplier: float = 2.25
+    atr_trailing_multiplier: float = 1.50
+    minimum_atr_stop: float = 0.02
+    maximum_atr_stop: float = 0.08
+    cost_safety_margin: float = 0.01
+    buy_rsi_6: float = 20.0
+    buy_rsi_12: float = 35.0
+    buy_rsi_24_min: float = 40.0
+    buy_rsi_24_max: float = 55.0
+    sell_rsi_6: float = 80.0
+    sell_rsi_12: float = 65.0
+    sell_rsi_24: float = 60.0
+    trend_fast_ema: int = 50
+    trend_slow_ema: int = 200
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -48,12 +63,18 @@ class BotSettings:
     @classmethod
     def from_dict(cls, values: dict) -> "BotSettings":
         values = dict(values)
+        legacy_risk_management = "risk_management_version" not in values
+        version = int(values.get("risk_management_version", 0))
+        if version < 2:
+            values["risk_management_version"] = 2
+            if values.get("risk_per_trade", 0.01) == 0.01:
+                values["risk_per_trade"] = 0.005
         if values.get("minimum_buy_price_drop", 0) < 0.012:
             # La versión anterior solo esperaba tres segundos y podía agrupar
             # varias entradas casi al mismo precio.
             values["buy_spacing_ticks"] = 15
             values["minimum_buy_price_drop"] = 0.012
-        if "risk_management_version" not in values:
+        if legacy_risk_management:
             # Migra la estrategia antigua de recuperación a los nuevos
             # valores seguros, conservando comisiones y preferencias generales.
             values.pop("sell_gain", None)

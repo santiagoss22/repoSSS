@@ -399,7 +399,7 @@ class BacktestTests(unittest.TestCase):
     def test_backtest_returns_metrics(self):
         generator = random.Random(2)
         prices = [100.0]
-        for _ in range(200):
+        for _ in range(500):
             prices.append(prices[-1] * (1 + generator.gauss(0, 0.01)))
         result = run_backtest(
             prices,
@@ -436,31 +436,31 @@ class TechnicalIndicatorTests(unittest.TestCase):
 
     def test_extreme_volatility_blocks_position_size(self):
         strategy = MultiIndicatorStrategy()
-        closes = [100.0] * 35
-        highs = [110.0] * 35
-        lows = [90.0] * 35
+        closes = [100.0] * 220
+        highs = [110.0] * 220
+        lows = [90.0] * 220
         signal = strategy.evaluate(closes, closes, [], highs, lows)
         self.assertEqual(signal.size_factor, 0.0)
         self.assertGreaterEqual(atr_percent(closes, highs, lows), 0.05)
 
     def test_hourly_rsi_extreme_arms_then_confirms_buy(self):
-        prices = [100.0] * 30
-        for _ in range(24):
+        prices = [100 * (1.005 ** index) for index in range(220)]
+        for _ in range(10):
             prices.append(prices[-1] * 0.99)
         strategy = MultiIndicatorStrategy()
         armed = strategy.evaluate(prices)
         self.assertTrue(armed.buy_armed)
-        self.assertLess(armed.rsi_6, 15)
-        self.assertLess(armed.rsi_12, 25)
-        self.assertLess(armed.rsi_24, 35)
+        self.assertLess(armed.rsi_6, 20)
+        self.assertLess(armed.rsi_12, 35)
+        self.assertGreaterEqual(armed.rsi_24, 40)
 
         confirmed = strategy.evaluate(prices + [prices[-1] * 1.05])
         self.assertEqual(confirmed.action, "COMPRAR")
         self.assertTrue(confirmed.ema_confirmation)
 
     def test_hourly_rsi_extreme_arms_then_confirms_sell(self):
-        prices = [100.0] * 30
-        for _ in range(24):
+        prices = [100 * (0.999 ** index) for index in range(220)]
+        for _ in range(6):
             prices.append(prices[-1] * 1.01)
         strategy = MultiIndicatorStrategy()
         armed = strategy.evaluate(prices)
@@ -474,8 +474,8 @@ class TechnicalIndicatorTests(unittest.TestCase):
         self.assertTrue(confirmed.bearish_confirmation)
 
     def test_same_hourly_candle_cannot_execute_twice(self):
-        prices = [100.0] * 30
-        for _ in range(24):
+        prices = [100 * (1.005 ** index) for index in range(220)]
+        for _ in range(10):
             prices.append(prices[-1] * 0.99)
         strategy = MultiIndicatorStrategy()
         strategy.evaluate(prices)
