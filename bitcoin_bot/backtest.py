@@ -159,18 +159,27 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
             account.register_sale(price, settings.post_sale_cooldown_ticks)
             continue
         action = technical.action
-        entry_confirmed = account.price_allows_next_buy(
-            price, settings.minimum_buy_price_drop
-        ) or technical.ema_confirmation
-        reentry_allowed = account.post_sale_buy_allowed(
-            price, settings.reentry_pullback, technical.ema_confirmation
-        )
+        if action == "VENDER":
+            profitable = account.profitable_lots(
+                price, 0.0, settings.fee_rate, settings.slippage_rate
+            )
+            if profitable:
+                trade = account.sell_profitable_lots(
+                    price,
+                    0.0,
+                    "Giro RSI bajista 1h",
+                    fee_rate=settings.fee_rate,
+                    slippage_rate=settings.slippage_rate,
+                )
+                account.record_sale_result(
+                    trade.pnl_eur,
+                    settings.loss_streak_pause_after,
+                    settings.loss_streak_pause_ticks,
+                )
+            continue
         if (
             action == "COMPRAR"
             and account.cooldown_remaining == 0
-            and account.buy_cooldown_remaining == 0
-            and entry_confirmed
-            and reentry_allowed
             and account.loss_streak_cooldown_remaining == 0
             and account.consecutive_losses < settings.loss_streak_halt_after
             and account.max_drawdown < settings.drawdown_block_buys
@@ -204,7 +213,6 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
                     fee_rate=settings.fee_rate,
                     slippage_rate=settings.slippage_rate,
                 )
-                account.buy_cooldown_remaining = settings.buy_spacing_ticks
             except ValueError:
                 # Una señal válida puede quedar por debajo del mínimo al rozar
                 # la reserva o la exposición máxima; el backtest continúa.

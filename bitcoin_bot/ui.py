@@ -380,21 +380,6 @@ class SettingsDialog(QDialog):
         form.addRow("Cooldown tras pérdida (ciclos)", cooldown)
         self.inputs["cooldown_ticks"] = cooldown
 
-        buy_spacing = QSpinBox()
-        buy_spacing.setRange(0, 60)
-        buy_spacing.setValue(settings.buy_spacing_ticks)
-        form.addRow("Separación entre compras (ciclos)", buy_spacing)
-        self.inputs["buy_spacing_ticks"] = buy_spacing
-
-        buy_drop = QDoubleSpinBox()
-        buy_drop.setRange(0, 10)
-        buy_drop.setDecimals(2)
-        buy_drop.setSingleStep(0.10)
-        buy_drop.setSuffix(" %")
-        buy_drop.setValue(settings.minimum_buy_price_drop * 100)
-        form.addRow("Caída mínima para recomprar", buy_drop)
-        self.inputs["minimum_buy_price_drop"] = buy_drop
-
         chart_range = QDoubleSpinBox()
         chart_range.setRange(500, 100_000)
         chart_range.setDecimals(0)
@@ -425,12 +410,6 @@ class SettingsDialog(QDialog):
         settings.minimum_cash_eur = self.inputs["minimum_cash_eur"].value()
         settings.minimum_trade_eur = self.inputs["minimum_trade_eur"].value()
         settings.cooldown_ticks = int(self.inputs["cooldown_ticks"].value())
-        settings.buy_spacing_ticks = int(
-            self.inputs["buy_spacing_ticks"].value()
-        )
-        settings.minimum_buy_price_drop = (
-            self.inputs["minimum_buy_price_drop"].value() / 100
-        )
         settings.chart_range_eur = self.inputs["chart_range_eur"].value()
 
 
@@ -930,57 +909,63 @@ class MainWindow(QMainWindow):
             self.bot_status_label.setText(f"Bot: {status}")
             self.decision_label.setText(
                 f"Decisión actual: {self._decision_explanation(action, status)} "
-                f"RSI {technical.rsi:.1f} · ATR {technical.volatility:.2%}."
+                f"RSI(6) {technical.rsi_6:.1f} · "
+                f"RSI(12) {technical.rsi_12:.1f} · "
+                f"RSI(24) {technical.rsi_24:.1f} · "
+                f"ATR {technical.volatility:.2%}."
             )
-            lower_entry = self.account.price_allows_next_buy(
-                self.market.price,
-                self.settings.minimum_buy_price_drop,
-            )
-            entry_confirmed = lower_entry or technical.ema_confirmation
-            reentry_allowed = self.account.post_sale_buy_allowed(
-                self.market.price,
-                self.settings.reentry_pullback,
-                technical.ema_confirmation,
-            )
+            if action == "VENDER":
+                profitable = self.account.profitable_lots(
+                    self.market.price,
+                    0.0,
+                    self.settings.fee_rate,
+                    self.settings.slippage_rate,
+                )
+                if profitable:
+                    trade = self.account.sell_profitable_lots(
+                        self.market.price,
+                        0.0,
+                        "Giro RSI bajista confirmado en vela 1h",
+                        fee_rate=self.settings.fee_rate,
+                        slippage_rate=self.settings.slippage_rate,
+                    )
+                    self.account.record_sale_result(
+                        trade.pnl_eur,
+                        self.settings.loss_streak_pause_after,
+                        self.settings.loss_streak_pause_ticks,
+                    )
+                    self._append_trade()
+                    self._save()
+                    self.bot_status_label.setText(
+                        f"Bot: venta RSI de {len(profitable)} lote/s rentable/s"
+                    )
+                elif self.account.lots:
+                    self.bot_status_label.setText(
+                        "Bot: venta RSI omitida · ningún lote cubre costes"
+                    )
+                else:
+                    self.bot_status_label.setText(
+                        "Bot: señal de venta RSI · sin posición abierta"
+                    )
+                self._refresh()
+                return
             if (
                 action == "COMPRAR"
                 and not pause_reason
                 and self.account.cooldown_remaining == 0
-                and self.account.buy_cooldown_remaining == 0
-                and entry_confirmed
-                and reentry_allowed
                 and self.account.can_buy(
                     self.market.price,
                     fee_rate=self.settings.fee_rate,
                 )
             ):
-                reason = (
-                    f"Precio {self.settings.minimum_buy_price_drop:.1%} "
-                    "bajo la última compra"
-                    if lower_entry else
-                    "Confirmación técnica EMA y multi-indicador"
+                self._buy_risk_sized(
+                    "Giro RSI alcista confirmado sobre EMA(9) en vela 1h"
                 )
-                self._buy_risk_sized(reason)
             elif action == "COMPRAR":
                 reason = pause_reason or (
                     f"cooldown: quedan {self.account.cooldown_remaining} ciclos"
                     if self.account.cooldown_remaining else
-                    (
-                        "separación entre compras: quedan "
-                        f"{self.account.buy_cooldown_remaining} ciclos"
-                        if self.account.buy_cooldown_remaining else
-                        (
-                            "reentrada tras venta aún no confirmada"
-                            if not reentry_allowed else
-                            (
-                            "el precio aún no ha bajado "
-                            f"{self.settings.minimum_buy_price_drop:.1%} "
-                            "desde la última compra"
-                            if not entry_confirmed else
-                            "no alcanza la compra mínima manteniendo la reserva"
-                            )
-                        )
-                    )
+                    "no alcanza la compra mínima manteniendo la reserva"
                 )
                 self.bot_status_label.setText(f"Bot: compra pausada · {reason}")
                 self.decision_label.setText(
@@ -995,12 +980,14 @@ class MainWindow(QMainWindow):
 
     def _decision_explanation(self, action: str, status: str) -> str:
         if action == "COMPRAR":
-            return "se confirmó una bajada suficiente y está comprobando los límites de compra."
-        if "baj" in status.lower() or "compra" in status.lower():
-            return "ha detectado una bajada, pero todavía espera la confirmación configurada."
-        if "sub" in status.lower() or "venta" in status.lower():
-            return "vigila la subida; cada lote se venderá al alcanzar su objetivo neto."
-        return "no existe todavía una señal válida; continúa observando nuevos precios."
+            return "el RSI giró al alza y la vela de 1h cerró sobre EMA(9)."
+        if action == "VENDER":
+            return "el RSI giró a la baja y la vela de 1h cerró bajo EMA(9)."
+        if "Compra preparada" in status:
+            return "los tres RSI están en zona baja; espera el giro alcista."
+        if "Venta preparada" in status:
+            return "los tres RSI están en zona alta; espera el giro bajista."
+        return "los RSI de 1h todavía no han preparado una señal."
 
     def _risk_pause_reason(self) -> str:
         now = datetime.now()
@@ -1100,10 +1087,6 @@ class MainWindow(QMainWindow):
                 fee_rate=self.settings.fee_rate,
                 slippage_rate=self.settings.slippage_rate,
             )
-            if not show_dialog:
-                self.account.buy_cooldown_remaining = (
-                    self.settings.buy_spacing_ticks
-                )
             self._append_trade()
             self._save()
         except ValueError as error:
@@ -1292,7 +1275,6 @@ class MainWindow(QMainWindow):
         )
         pause = self._risk_pause_reason()
         cooldown = self.account.cooldown_remaining
-        buy_spacing = self.account.buy_cooldown_remaining
         open_risk = self.account.estimated_open_risk(
             self.settings.stop_loss,
             self.settings.fee_rate,
@@ -1304,7 +1286,7 @@ class MainWindow(QMainWindow):
             f"riesgo abierto {open_risk:,.0f} € / "
             f"{self.account.initial_cash_eur * self.settings.max_open_risk:,.0f} € · "
             f"racha {self.account.consecutive_losses} · "
-            f"cooldown {cooldown} · próxima compra {buy_spacing} · "
+            f"cooldown protección {cooldown} · "
             f"lotes {len(self.account.lots)}/{self.account.max_open_lots}"
             + (
                 f" · spread {(self.live_ask - self.live_bid) / ((self.live_ask + self.live_bid) / 2):.2%}"
