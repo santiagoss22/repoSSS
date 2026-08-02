@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from bitcoin_bot.backtest import download_coinbase_daily_prices, run_backtest
+from bitcoin_bot.backtest import evaluate_robustness, run_backtest
 from bitcoin_bot.config import BotSettings
 from bitcoin_bot.market_data import (
     Candle,
@@ -42,13 +42,14 @@ from bitcoin_bot.market_data import (
     LiveMarketWorker,
     PUBLIC_MARKET_SOURCES,
     SIMULATED_TAKER_FEES,
+    download_kraken_hourly_history,
 )
 from bitcoin_bot.persistence import load_state, save_state
 from bitcoin_bot.simulator import (
     PaperAccount,
     PriceSimulator,
 )
-from bitcoin_bot.technical_strategy import MultiIndicatorStrategy
+from bitcoin_bot.technical_strategy import MultiIndicatorStrategy, build_trade_risk_plan
 
 
 class KeepAwakeManager:
@@ -448,7 +449,7 @@ class MainWindow(QMainWindow):
         for lot in self.account.lots:
             lot.frozen = False
         self.market = PriceSimulator(initial_price=self.account.last_market_price_eur)
-        self.strategy = MultiIndicatorStrategy()
+        self.strategy = MultiIndicatorStrategy(self.settings)
         self.current_size_factor = 1.0
         self.keep_awake = KeepAwakeManager()
         self.prices = [self.market.price]
@@ -812,7 +813,7 @@ class MainWindow(QMainWindow):
         if len(self.replay_candles) < 100:
             self._load_kraken_history()
             return
-        warmup = 50
+        warmup = 220
         # 86.400 velas permiten dejar 24 horas reales el replay a 1h = 1s.
         minimum_run = min(86_400, len(self.replay_candles) - warmup)
         maximum_start = max(warmup, len(self.replay_candles) - minimum_run)
@@ -827,7 +828,7 @@ class MainWindow(QMainWindow):
             max_position_fraction=self.settings.max_position_fraction,
             max_open_lots=self.settings.max_open_lots,
         )
-        self.strategy = MultiIndicatorStrategy()
+        self.strategy = MultiIndicatorStrategy(self.settings)
         history = self.replay_candles[
             self.replay_index - warmup : self.replay_index
         ]
@@ -1211,7 +1212,8 @@ class MainWindow(QMainWindow):
                 )
             ):
                 self._buy_risk_sized(
-                    "Giro RSI alcista confirmado sobre EMA(9) en vela 1h"
+                    "Giro RSI alcista confirmado sobre EMA(9) en vela 1h",
+                    technical.volatility,
                 )
             elif action == "COMPRAR":
                 reason = pause_reason or (
@@ -1285,24 +1287,50 @@ class MainWindow(QMainWindow):
                 return f"spread demasiado alto ({spread:.2%})"
         return ""
 
-    def _buy_risk_sized(self, reason: str) -> None:
+    def _buy_risk_sized(self, reason: str, volatility: float) -> None:
+        fee_rate = self._effective_fee_rate()
+        plan = build_trade_risk_plan(volatility, self.settings, fee_rate)
+        if not plan.covers_costs:
+            self.bot_status_label.setText(
+                "Bot: compra omitida · movimiento esperado no cubre costes"
+            )
+            self.decision_label.setText(
+                "Decisión actual: el objetivo ATR no supera comisiones, "
+                "slippage y el margen de seguridad."
+            )
+            return
         reduced = (
             self.current_size_factor < 1
             or self.account.max_drawdown >= self.settings.drawdown_reduce_size
         )
-        budget = (
+        size_cap = (
             self.settings.high_volatility_buy_eur
             if reduced else self.settings.normal_buy_eur
         )
+        budget = min(
+            size_cap,
+            self.account.risk_sized_value(
+                self.market.price,
+                self.settings.risk_per_trade,
+                plan.stop_loss,
+                fee_rate,
+                self.settings.slippage_rate,
+            ),
+        )
+        if budget < self.settings.minimum_trade_eur * (1 + fee_rate):
+            self.bot_status_label.setText(
+                "Bot: compra omitida · tamaño por riesgo inferior al mínimo"
+            )
+            return
         maximum_risk = (
             self.account.initial_cash_eur * self.settings.max_open_risk
         )
         if not self.account.can_add_risk(
             self.market.price,
             budget,
-            self.settings.stop_loss,
+            plan.stop_loss,
             maximum_risk,
-            self._effective_fee_rate(),
+            fee_rate,
             self.settings.slippage_rate,
         ):
             self.bot_status_label.setText(
@@ -1312,12 +1340,13 @@ class MainWindow(QMainWindow):
                 "Decisión actual: el nuevo lote superaría el 4 % de riesgo conjunto."
             )
             return
-        value = budget / (1 + self._effective_fee_rate())
+        value = budget / (1 + fee_rate)
         self._buy(
             reason,
             self.settings.max_position_fraction,
             value,
             show_dialog=False,
+            risk_plan=plan,
         )
 
     def _buy(
@@ -1326,6 +1355,7 @@ class MainWindow(QMainWindow):
         fraction: float,
         requested_value: float | None = None,
         show_dialog: bool = True,
+        risk_plan=None,
     ) -> None:
         try:
             self.account.minimum_cash_eur = self.settings.minimum_cash_eur
@@ -1341,6 +1371,14 @@ class MainWindow(QMainWindow):
                 max_fraction=fraction,
                 fee_rate=self._effective_fee_rate(),
                 slippage_rate=self.settings.slippage_rate,
+                stop_loss_rate=risk_plan.stop_loss if risk_plan else 0.0,
+                target_profit_rate=risk_plan.target_profit if risk_plan else 0.0,
+                trailing_activation_rate=(
+                    risk_plan.trailing_activation if risk_plan else 0.0
+                ),
+                trailing_distance_rate=(
+                    risk_plan.trailing_distance if risk_plan else 0.0
+                ),
             )
             self._append_trade()
             self._save()
@@ -1412,7 +1450,7 @@ class MainWindow(QMainWindow):
             max_open_lots=self.settings.max_open_lots,
         )
         self.market = PriceSimulator(initial_price=90_000.0)
-        self.strategy = MultiIndicatorStrategy()
+        self.strategy = MultiIndicatorStrategy(self.settings)
         self.prices = [self.market.price]
         self.table.setRowCount(0)
         self.signal_label.setText("● ESPERAR")
@@ -1430,16 +1468,20 @@ class MainWindow(QMainWindow):
         self.backtest_button.setText("Descargando histórico…")
         QApplication.processEvents()
         try:
-            prices = download_coinbase_daily_prices()
+            candles = self.replay_candles or download_kraken_hourly_history(
+                self.data_dir / "kraken_xbteur_60.csv"
+            )
+            prices = [candle.close for candle in candles]
             result = run_backtest(prices, self.settings)
             validation_start = max(0, int(len(prices) * 0.70))
             validation_prices = prices[validation_start:]
             validation = run_backtest(validation_prices, self.settings)
+            robustness = evaluate_robustness(prices, self.settings)
             QMessageBox.information(
                 self,
-                "Backtest BTC-EUR · Coinbase",
+                "Backtest BTC-EUR · Kraken 1h",
                 (
-                    f"Velas diarias: {len(prices)}\n"
+                    f"Velas horarias: {len(prices)}\n"
                     f"Capital final: {result.ending_equity:,.2f} €\n"
                     f"Rentabilidad: {result.return_percent:+.2f} %\n"
                     f"Beneficio realizado: {result.realized_profit:+,.2f} €\n"
@@ -1454,12 +1496,20 @@ class MainWindow(QMainWindow):
                     f"Pérdida media: {result.average_loss_eur:,.2f} €\n"
                     f"Profit factor: {result.profit_factor:.2f}\n"
                     f"Racha máxima de pérdidas: {result.max_losing_streak}\n"
+                    f"Esperanza por venta: {result.expectancy_eur:+,.2f} €\n"
+                    f"Sharpe / Sortino: {result.sharpe_ratio:.2f} / {result.sortino_ratio:.2f}\n"
+                    f"Tiempo expuesto: {result.exposure_percent:.1f} %\n"
                     f"Rentabilidad anualizada: {result.annualized_return_percent:+.2f} %\n"
                     f"Comprar y mantener: {result.buy_hold_return_percent:+.2f} %\n"
                     f"Diferencia frente a mantener: {result.excess_return_percent:+.2f} %\n\n"
                     f"Validación final (último 30 %): "
                     f"{validation.return_percent:+.2f} % · "
                     f"drawdown {validation.max_drawdown_percent:.2f} %\n\n"
+                    f"Periodos rentables: {robustness.profitable_folds}/"
+                    f"{robustness.folds} · media {robustness.walk_forward_average_percent:+.2f} %\n"
+                    f"Costes ×1,5 / ×2: {robustness.stress_150_percent:+.2f} % / "
+                    f"{robustness.stress_200_percent:+.2f} %\n"
+                    f"Monte Carlo (peor 5 %): {robustness.monte_carlo_p05_equity:,.2f} €\n\n"
                     "Resultado histórico orientativo; no predice resultados futuros."
                 ),
             )

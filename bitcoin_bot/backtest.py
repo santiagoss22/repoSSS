@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import json
+import math
+import random
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from bitcoin_bot.config import BotSettings
 from bitcoin_bot.simulator import PaperAccount
-from bitcoin_bot.technical_strategy import MultiIndicatorStrategy
+from bitcoin_bot.technical_strategy import MultiIndicatorStrategy, build_trade_risk_plan
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,21 @@ class BacktestResult:
     average_loss_eur: float
     profit_factor: float
     max_losing_streak: int
+    expectancy_eur: float = 0.0
+    sharpe_ratio: float = 0.0
+    sortino_ratio: float = 0.0
+    exposure_percent: float = 0.0
+    sale_pnls: tuple[float, ...] = ()
+
+
+@dataclass(frozen=True)
+class RobustnessResult:
+    profitable_folds: int
+    folds: int
+    walk_forward_average_percent: float
+    stress_150_percent: float
+    stress_200_percent: float
+    monte_carlo_p05_equity: float
 
 
 def download_coinbase_daily_prices(limit: int = 1_095) -> list[float]:
@@ -62,7 +79,7 @@ def download_coinbase_daily_prices(limit: int = 1_095) -> list[float]:
 
 
 def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
-    if len(prices) < 35:
+    if len(prices) < settings.trend_slow_ema + 2:
         raise ValueError("No hay suficientes precios para ejecutar el backtest.")
     account = PaperAccount(
         minimum_cash_eur=settings.minimum_cash_eur,
@@ -70,11 +87,15 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
         max_position_fraction=settings.max_position_fraction,
         max_open_lots=settings.max_open_lots,
     )
-    strategy = MultiIndicatorStrategy()
+    strategy = MultiIndicatorStrategy(settings)
     observed: list[float] = []
+    equity_curve: list[float] = []
+    invested_bars = 0
     for price in prices:
         observed.append(price)
         account.record_equity(price)
+        equity_curve.append(account.equity(price))
+        invested_bars += bool(account.lots)
         if account.cooldown_remaining > 0:
             account.cooldown_remaining -= 1
         if account.buy_cooldown_remaining > 0:
@@ -185,19 +206,33 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
             and account.max_drawdown < settings.drawdown_block_buys
             and account.can_buy(price, fee_rate=settings.fee_rate)
         ):
+            plan = build_trade_risk_plan(
+                technical.volatility, settings, settings.fee_rate
+            )
+            if not plan.covers_costs:
+                continue
             reduced = (
                 technical.size_factor < 1
                 or account.max_drawdown >= settings.drawdown_reduce_size
             )
-            budget = (
+            size_cap = (
                 settings.high_volatility_buy_eur
                 if reduced else settings.normal_buy_eur
             )
+            budget = min(
+                size_cap,
+                account.risk_sized_value(
+                    price, settings.risk_per_trade, plan.stop_loss,
+                    settings.fee_rate, settings.slippage_rate,
+                ),
+            )
+            if budget < settings.minimum_trade_eur * (1 + settings.fee_rate):
+                continue
             maximum_risk = account.initial_cash_eur * settings.max_open_risk
             if not account.can_add_risk(
                 price,
                 budget,
-                settings.stop_loss,
+                plan.stop_loss,
                 maximum_risk,
                 settings.fee_rate,
                 settings.slippage_rate,
@@ -212,6 +247,10 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
                     max_fraction=settings.max_position_fraction,
                     fee_rate=settings.fee_rate,
                     slippage_rate=settings.slippage_rate,
+                    stop_loss_rate=plan.stop_loss,
+                    target_profit_rate=plan.target_profit,
+                    trailing_activation_rate=plan.trailing_activation,
+                    trailing_distance_rate=plan.trailing_distance,
                 )
             except ValueError:
                 # Una señal válida puede quedar por debajo del mínimo al rozar
@@ -233,8 +272,26 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
         max_streak = max(max_streak, current_streak)
     buy_hold_return = (prices[-1] / prices[0] - 1) * 100
     return_percent = (ending / account.initial_cash_eur - 1) * 100
-    years = max(len(prices) - 1, 1) / 365
+    years = max(len(prices) - 1, 1) / (24 * 365)
     annualized = ((ending / account.initial_cash_eur) ** (1 / years) - 1) * 100
+    expectancy = sum(trade.pnl_eur for trade in sales) / len(sales) if sales else 0.0
+    returns = [
+        current / previous - 1
+        for previous, current in zip(equity_curve, equity_curve[1:])
+        if previous > 0
+    ]
+    mean_return = sum(returns) / len(returns) if returns else 0.0
+    variance = (
+        sum((value - mean_return) ** 2 for value in returns) / len(returns)
+        if returns else 0.0
+    )
+    downside = [min(value, 0.0) for value in returns]
+    downside_deviation = math.sqrt(
+        sum(value * value for value in downside) / len(downside)
+    ) if downside else 0.0
+    annualizer = math.sqrt(24 * 365)
+    sharpe = mean_return / math.sqrt(variance) * annualizer if variance > 0 else 0.0
+    sortino = mean_return / downside_deviation * annualizer if downside_deviation > 0 else 0.0
     return BacktestResult(
         account.initial_cash_eur,
         ending,
@@ -254,4 +311,56 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
         average_loss,
         profit_factor,
         max_streak,
+        expectancy,
+        sharpe,
+        sortino,
+        invested_bars / len(prices) * 100,
+        tuple(trade.pnl_eur for trade in sales),
+    )
+
+
+def evaluate_robustness(prices: list[float], settings: BotSettings) -> RobustnessResult:
+    """Pruebas deterministas de periodos separados, costes y orden de resultados."""
+    minimum = settings.trend_slow_ema + 2
+    fold_size = max(minimum, len(prices) // 5)
+    folds = [prices[index:index + fold_size] for index in range(0, len(prices), fold_size)]
+    folds = [fold for fold in folds if len(fold) >= minimum][-5:]
+    fold_results = [run_backtest(fold, settings) for fold in folds]
+    base = run_backtest(prices, settings)
+    stress_150 = run_backtest(
+        prices,
+        replace(
+            settings,
+            fee_rate=settings.fee_rate * 1.5,
+            slippage_rate=settings.slippage_rate * 1.5,
+        ),
+    )
+    stress_200 = run_backtest(
+        prices,
+        replace(
+            settings,
+            fee_rate=settings.fee_rate * 2,
+            slippage_rate=settings.slippage_rate * 2,
+        ),
+    )
+    rng = random.Random(42)
+    outcomes = []
+    if base.sale_pnls:
+        for _ in range(1_000):
+            outcomes.append(
+                base.starting_equity
+                + sum(rng.choice(base.sale_pnls) for _ in base.sale_pnls)
+            )
+        outcomes.sort()
+        p05 = outcomes[int(len(outcomes) * 0.05)]
+    else:
+        p05 = base.ending_equity
+    return RobustnessResult(
+        sum(result.return_percent > 0 for result in fold_results),
+        len(fold_results),
+        sum(result.return_percent for result in fold_results) / len(fold_results)
+        if fold_results else 0.0,
+        stress_150.return_percent,
+        stress_200.return_percent,
+        p05,
     )

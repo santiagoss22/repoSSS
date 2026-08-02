@@ -25,6 +25,10 @@ class PositionLot:
     frozen: bool = False
     entry_price_eur: float = 0.0
     peak_price_eur: float = 0.0
+    stop_loss_rate: float = 0.0
+    target_profit_rate: float = 0.0
+    trailing_activation_rate: float = 0.0
+    trailing_distance_rate: float = 0.0
 
 
 @dataclass
@@ -106,7 +110,8 @@ class PaperAccount:
             return 0.0
         net_factor = (1 - fee_rate) * (1 - slippage_rate)
         average = cost / amount
-        return average * (1 + profit_rate) / net_factor
+        target_profit = lot.target_profit_rate or profit_rate
+        return average * (1 + target_profit) / net_factor
 
     def lot_target_price(
         self,
@@ -285,7 +290,8 @@ class PaperAccount:
         total = 0.0
         for lot in self.lots:
             entry = lot.entry_price_eur or lot.cost_basis_eur / lot.bitcoin
-            stop_market = entry * (1 - stop_loss)
+            lot_stop_loss = lot.stop_loss_rate or stop_loss
+            stop_market = entry * (1 - lot_stop_loss)
             expected_net = (
                 lot.bitcoin
                 * stop_market
@@ -368,6 +374,10 @@ class PaperAccount:
         fee_rate: float = 0.0,
         slippage_rate: float = 0.0,
         recovery_lot: bool = False,
+        stop_loss_rate: float = 0.0,
+        target_profit_rate: float = 0.0,
+        trailing_activation_rate: float = 0.0,
+        trailing_distance_rate: float = 0.0,
     ) -> Trade:
         if price_eur <= 0:
             raise ValueError("El precio debe ser positivo.")
@@ -407,6 +417,10 @@ class PaperAccount:
                 frozen=False,
                 entry_price_eur=execution_price,
                 peak_price_eur=execution_price,
+                stop_loss_rate=stop_loss_rate,
+                target_profit_rate=target_profit_rate,
+                trailing_activation_rate=trailing_activation_rate,
+                trailing_distance_rate=trailing_distance_rate,
             )
         )
         self.total_fees_eur += fee
@@ -504,10 +518,19 @@ class PaperAccount:
         for lot in self.lots:
             entry = lot.entry_price_eur or lot.cost_basis_eur / lot.bitcoin
             lot.peak_price_eur = max(lot.peak_price_eur or entry, price_eur)
-            stop = entry * (1 - stop_loss)
-            trailing_active = lot.peak_price_eur >= entry * (1 + trailing_activation)
+            lot_stop_loss = lot.stop_loss_rate or stop_loss
+            lot_trailing_activation = (
+                lot.trailing_activation_rate or trailing_activation
+            )
+            lot_trailing_distance = lot.trailing_distance_rate or trailing_distance
+            stop = entry * (1 - lot_stop_loss)
+            trailing_active = lot.peak_price_eur >= entry * (
+                1 + lot_trailing_activation
+            )
             if trailing_active:
-                stop = max(stop, lot.peak_price_eur * (1 - trailing_distance))
+                stop = max(
+                    stop, lot.peak_price_eur * (1 - lot_trailing_distance)
+                )
             if price_eur <= stop:
                 stopped.append(lot)
                 trailing_triggered = trailing_triggered or trailing_active
@@ -522,10 +545,15 @@ class PaperAccount:
         stops = []
         for lot in self.lots:
             entry = lot.entry_price_eur or lot.cost_basis_eur / lot.bitcoin
-            stop = entry * (1 - stop_loss)
+            lot_stop_loss = lot.stop_loss_rate or stop_loss
+            lot_trailing_activation = (
+                lot.trailing_activation_rate or trailing_activation
+            )
+            lot_trailing_distance = lot.trailing_distance_rate or trailing_distance
+            stop = entry * (1 - lot_stop_loss)
             peak = lot.peak_price_eur or entry
-            if peak >= entry * (1 + trailing_activation):
-                stop = max(stop, peak * (1 - trailing_distance))
+            if peak >= entry * (1 + lot_trailing_activation):
+                stop = max(stop, peak * (1 - lot_trailing_distance))
             stops.append(stop)
         return max(stops) if stops else 0.0
 

@@ -82,13 +82,54 @@ class TechnicalSignal:
     sell_armed: bool = False
 
 
+@dataclass(frozen=True)
+class TradeRiskPlan:
+    stop_loss: float
+    target_profit: float
+    trailing_activation: float
+    trailing_distance: float
+    expected_move: float
+    covers_costs: bool
+
+
+def build_trade_risk_plan(volatility: float, settings, fee_rate: float) -> TradeRiskPlan:
+    """Congela salidas coherentes con la volatilidad y los costes de entrada."""
+    stop = min(
+        getattr(settings, "maximum_atr_stop", 0.08),
+        max(
+            getattr(settings, "minimum_atr_stop", 0.02),
+            volatility * getattr(settings, "atr_stop_multiplier", 1.5),
+        ),
+    )
+    expected_move = volatility * getattr(settings, "atr_target_multiplier", 2.25)
+    round_trip_cost = 2 * fee_rate + 2 * getattr(settings, "slippage_rate", 0.0)
+    target = max(expected_move, stop * 1.5, round_trip_cost + getattr(settings, "cost_safety_margin", 0.01))
+    trailing_distance = min(
+        stop,
+        max(0.01, volatility * getattr(settings, "atr_trailing_multiplier", 1.5)),
+    )
+    return TradeRiskPlan(
+        stop, target, max(stop, target / 2), trailing_distance, expected_move,
+        expected_move >= round_trip_cost + getattr(settings, "cost_safety_margin", 0.01),
+    )
+
+
 class MultiIndicatorStrategy:
     """Opera giros extremos de RSI usando únicamente velas cerradas de 1h."""
 
-    def __init__(self) -> None:
+    def __init__(self, settings=None) -> None:
         self.buy_armed = False
         self.sell_armed = False
         self._last_bar_key: tuple[int, float] | None = None
+        self.buy_rsi_6 = getattr(settings, "buy_rsi_6", 20.0)
+        self.buy_rsi_12 = getattr(settings, "buy_rsi_12", 35.0)
+        self.buy_rsi_24_min = getattr(settings, "buy_rsi_24_min", 40.0)
+        self.buy_rsi_24_max = getattr(settings, "buy_rsi_24_max", 55.0)
+        self.sell_rsi_6 = getattr(settings, "sell_rsi_6", 80.0)
+        self.sell_rsi_12 = getattr(settings, "sell_rsi_12", 65.0)
+        self.sell_rsi_24 = getattr(settings, "sell_rsi_24", 60.0)
+        self.trend_fast = getattr(settings, "trend_fast_ema", 50)
+        self.trend_slow = getattr(settings, "trend_slow_ema", 200)
 
     def evaluate(
         self,
@@ -98,7 +139,7 @@ class MultiIndicatorStrategy:
         hourly_highs: list[float] | None = None,
         hourly_lows: list[float] | None = None,
     ) -> TechnicalSignal:
-        if len(hourly) < 26:
+        if len(hourly) < self.trend_slow + 2:
             return TechnicalSignal(
                 "ESPERAR", "Indicadores calentando", 0, 50.0, 0.0, 0.0
             )
@@ -106,6 +147,8 @@ class MultiIndicatorStrategy:
         rsi_12 = rsi(hourly, 12)
         rsi_24 = rsi(hourly, 24)
         ema_9 = ema(hourly, 9)
+        ema_fast = ema(hourly, self.trend_fast)
+        ema_slow = ema(hourly, self.trend_slow)
         histogram = macd_histogram(hourly)
         volatility = atr_percent(hourly, hourly_highs, hourly_lows)
         size_factor = 0.0 if volatility >= 0.05 else 0.5 if volatility >= 0.03 else 1.0
@@ -128,8 +171,22 @@ class MultiIndicatorStrategy:
 
         was_buy_armed = self.buy_armed
         was_sell_armed = self.sell_armed
-        oversold = values[0] < 15 and values[1] < 25 and values[2] < 35
-        overbought = values[0] > 80 and values[1] > 65 and values[2] > 60
+        trend_ok = (
+            ema_fast[-1] > ema_slow[-1]
+            and ema_slow[-1] >= ema_slow[-2]
+            and hourly[-1] > ema_slow[-1]
+        )
+        oversold = (
+            values[0] < self.buy_rsi_6
+            and values[1] < self.buy_rsi_12
+            and self.buy_rsi_24_min <= values[2] <= self.buy_rsi_24_max
+            and trend_ok
+        )
+        overbought = (
+            values[0] > self.sell_rsi_6
+            and values[1] > self.sell_rsi_12
+            and values[2] > self.sell_rsi_24
+        )
         if oversold:
             self.buy_armed = True
             self.sell_armed = False
@@ -142,6 +199,8 @@ class MultiIndicatorStrategy:
             and rsi_6[-1] > rsi_6[-2]
             and rsi_12[-1] >= rsi_12[-2]
             and hourly[-1] > ema_9[-1]
+            and histogram[-1] > histogram[-2]
+            and trend_ok
         )
         sell_turn = (
             was_sell_armed
@@ -161,7 +220,7 @@ class MultiIndicatorStrategy:
         if buy_turn:
             self.buy_armed = False
             return TechnicalSignal(
-                "COMPRAR", "Giro RSI alcista · cierre 1h sobre EMA(9)", 3,
+                "COMPRAR", "Retroceso alcista · RSI, EMA(9) y MACD confirmados", 4,
                 ema_confirmation=True,
                 bearish_confirmation=bearish_confirmation,
                 buy_armed=False, sell_armed=self.sell_armed, **common,
@@ -179,11 +238,11 @@ class MultiIndicatorStrategy:
         if self.sell_armed and values[2] <= 50:
             self.sell_armed = False
         status = (
-            "Compra preparada · esperando giro RSI y EMA(9)"
+            "Compra preparada · esperando RSI, EMA(9) y MACD"
             if self.buy_armed else
             "Venta preparada · esperando giro RSI y EMA(9)"
             if self.sell_armed else
-            "RSI 1h sin señal extrema"
+            "Sin retroceso válido dentro de tendencia EMA(50/200)"
         )
         return TechnicalSignal(
             "ESPERAR", status, int(oversold or overbought),
