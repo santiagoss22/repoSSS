@@ -58,6 +58,10 @@ class PaperAccount:
     consecutive_losses: int = 0
     loss_streak_cooldown_remaining: int = 0
 
+    def now(self) -> datetime:
+        """Reloj sustituible para que el replay conserve fechas históricas."""
+        return getattr(self, "replay_time", None) or datetime.now()
+
     def equity(self, price_eur: float) -> float:
         return self.cash_eur + self.bitcoin * price_eur
 
@@ -399,6 +403,7 @@ class PaperAccount:
             PositionLot(
                 amount,
                 total_cost,
+                timestamp=self.now(),
                 frozen=False,
                 entry_price_eur=execution_price,
                 peak_price_eur=execution_price,
@@ -406,7 +411,7 @@ class PaperAccount:
         )
         self.total_fees_eur += fee
         trade = Trade(
-            datetime.now(),
+            self.now(),
             "COMPRA",
             amount,
             execution_price,
@@ -588,7 +593,7 @@ class PaperAccount:
         self.realized_profit_eur += profit
         self.total_fees_eur += fee
         trade = Trade(
-            datetime.now(),
+            self.now(),
             "VENTA",
             amount,
             execution_price,
