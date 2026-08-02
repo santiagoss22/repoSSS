@@ -35,7 +35,7 @@ class BotSettings:
     normal_buy_eur: float = 2_000.0
     high_volatility_buy_eur: float = 1_000.0
     loss_streak_pause_after: int = 2
-    loss_streak_halt_after: int = 3
+    loss_streak_halt_after: int = 10
     loss_streak_pause_ticks: int = 120
     drawdown_reduce_size: float = 0.05
     drawdown_block_buys: float = 0.08
@@ -67,5 +67,9 @@ class BotSettings:
             values["trailing_activation"] = 0.025
         if values.get("trailing_distance") == 0.04:
             values["trailing_distance"] = 0.015
+        if values.get("loss_streak_halt_after") == 3:
+            # Migra el antiguo bloqueo, demasiado sensible para evaluar la
+            # estrategia durante periodos largos de simulación.
+            values["loss_streak_halt_after"] = 10
         allowed = cls.__dataclass_fields__
         return cls(**{key: value for key, value in values.items() if key in allowed})

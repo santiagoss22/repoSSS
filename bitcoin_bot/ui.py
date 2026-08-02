@@ -1010,7 +1010,10 @@ class MainWindow(QMainWindow):
         if self.account.max_drawdown >= self.settings.drawdown_block_buys:
             return "drawdown del 8 %; compras bloqueadas"
         if self.account.consecutive_losses >= self.settings.loss_streak_halt_after:
-            return "tres pérdidas consecutivas; requiere revisión manual"
+            return (
+                f"{self.settings.loss_streak_halt_after} pérdidas consecutivas; "
+                "requiere revisión manual"
+            )
         if self.account.loss_streak_cooldown_remaining > 0:
             return (
                 "racha de pérdidas: quedan "

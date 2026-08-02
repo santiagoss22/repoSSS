@@ -308,6 +308,13 @@ class TrendConfirmationTests(unittest.TestCase):
 
 
 class PersistenceTests(unittest.TestCase):
+    def test_old_three_loss_halt_migrates_to_ten(self):
+        settings = BotSettings.from_dict({"loss_streak_halt_after": 3})
+        self.assertEqual(settings.loss_streak_halt_after, 10)
+
+        custom = BotSettings.from_dict({"loss_streak_halt_after": 7})
+        self.assertEqual(custom.loss_streak_halt_after, 7)
+
     def test_state_round_trip(self):
         account = PaperAccount()
         account.buy(50_000, 2_000, "persistencia")
