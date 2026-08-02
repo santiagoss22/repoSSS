@@ -396,17 +396,45 @@ class TechnicalIndicatorTests(unittest.TestCase):
         self.assertEqual(signal.size_factor, 0.0)
         self.assertGreaterEqual(atr_percent(closes, highs, lows), 0.05)
 
-    def test_strategy_can_confirm_two_indicators(self):
-        generator = random.Random(2)
-        prices = [100.0]
-        found = False
-        for _ in range(200):
-            prices.append(prices[-1] * (1 + generator.gauss(0, 0.01)))
-            signal = MultiIndicatorStrategy().evaluate(prices, prices, [])
-            if signal.action == "COMPRAR":
-                found = True
-                self.assertTrue(signal.ema_confirmation)
-        self.assertTrue(found)
+    def test_hourly_rsi_extreme_arms_then_confirms_buy(self):
+        prices = [100.0] * 30
+        for _ in range(24):
+            prices.append(prices[-1] * 0.99)
+        strategy = MultiIndicatorStrategy()
+        armed = strategy.evaluate(prices)
+        self.assertTrue(armed.buy_armed)
+        self.assertLess(armed.rsi_6, 15)
+        self.assertLess(armed.rsi_12, 25)
+        self.assertLess(armed.rsi_24, 35)
+
+        confirmed = strategy.evaluate(prices + [prices[-1] * 1.05])
+        self.assertEqual(confirmed.action, "COMPRAR")
+        self.assertTrue(confirmed.ema_confirmation)
+
+    def test_hourly_rsi_extreme_arms_then_confirms_sell(self):
+        prices = [100.0] * 30
+        for _ in range(24):
+            prices.append(prices[-1] * 1.01)
+        strategy = MultiIndicatorStrategy()
+        armed = strategy.evaluate(prices)
+        self.assertTrue(armed.sell_armed)
+        self.assertGreater(armed.rsi_6, 80)
+        self.assertGreater(armed.rsi_12, 65)
+        self.assertGreater(armed.rsi_24, 60)
+
+        confirmed = strategy.evaluate(prices + [prices[-1] * 0.95])
+        self.assertEqual(confirmed.action, "VENDER")
+        self.assertTrue(confirmed.bearish_confirmation)
+
+    def test_same_hourly_candle_cannot_execute_twice(self):
+        prices = [100.0] * 30
+        for _ in range(24):
+            prices.append(prices[-1] * 0.99)
+        strategy = MultiIndicatorStrategy()
+        strategy.evaluate(prices)
+        repeated = strategy.evaluate(prices)
+        self.assertEqual(repeated.action, "ESPERAR")
+        self.assertIn("cierre de vela 1h", repeated.status)
 
 
 class RecoveryModeTests(unittest.TestCase):

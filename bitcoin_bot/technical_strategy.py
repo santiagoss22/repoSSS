@@ -75,10 +75,20 @@ class TechnicalSignal:
     size_factor: float
     ema_confirmation: bool = False
     bearish_confirmation: bool = False
+    rsi_6: float = 50.0
+    rsi_12: float = 50.0
+    rsi_24: float = 50.0
+    buy_armed: bool = False
+    sell_armed: bool = False
 
 
 class MultiIndicatorStrategy:
-    """Compra retrocesos dentro de una tendencia positiva confirmada."""
+    """Opera giros extremos de RSI usando únicamente velas cerradas de 1h."""
+
+    def __init__(self) -> None:
+        self.buy_armed = False
+        self.sell_armed = False
+        self._last_bar_count = 0
 
     def evaluate(
         self,
@@ -88,50 +98,94 @@ class MultiIndicatorStrategy:
         hourly_highs: list[float] | None = None,
         hourly_lows: list[float] | None = None,
     ) -> TechnicalSignal:
-        five_minute = five_minute or hourly
-        daily = daily or []
-        if len(hourly) < 35 or len(five_minute) < 21:
+        if len(hourly) < 26:
             return TechnicalSignal(
                 "ESPERAR", "Indicadores calentando", 0, 50.0, 0.0, 0.0
             )
-
-        trend_ok = True
-        trend_text = "tendencia provisional"
-        if len(daily) >= 200:
-            daily_50 = ema(daily, 50)
-            daily_200 = ema(daily, 200)
-            trend_ok = daily[-1] > daily_200[-1] and daily_50[-1] > daily_50[-2]
-            trend_text = "tendencia diaria positiva" if trend_ok else "filtro diario bajista"
-
-        current_rsi = rsi(hourly, 14)
-        lower, _, _ = bollinger(hourly, 20)
+        rsi_6 = rsi(hourly, 6)
+        rsi_12 = rsi(hourly, 12)
+        rsi_24 = rsi(hourly, 24)
+        ema_9 = ema(hourly, 9)
         histogram = macd_histogram(hourly)
-        conditions = {
-            "RSI recuperándose": 30 <= current_rsi[-1] <= 58
-            and current_rsi[-1] > current_rsi[-2],
-            "cerca de Bollinger inferior": hourly[-1] <= lower * 1.012,
-            "MACD mejorando": histogram[-1] > histogram[-2],
-        }
-        score = sum(conditions.values())
-        fast = ema(five_minute, 9)
-        slow = ema(five_minute, 21)
-        confirmation = fast[-1] > slow[-1] or five_minute[-1] > fast[-1]
-        bearish_confirmation = fast[-1] < slow[-1] and histogram[-1] < 0
         volatility = atr_percent(hourly, hourly_highs, hourly_lows)
         size_factor = 0.0 if volatility >= 0.05 else 0.5 if volatility >= 0.03 else 1.0
-        matched = ", ".join(name for name, valid in conditions.items() if valid) or "sin confirmaciones"
+        values = (rsi_6[-1], rsi_12[-1], rsi_24[-1])
+        common = dict(
+            rsi=values[1], volatility=volatility, size_factor=size_factor,
+            rsi_6=values[0], rsi_12=values[1], rsi_24=values[2],
+        )
 
-        if not trend_ok:
-            return TechnicalSignal("ESPERAR", trend_text, score, current_rsi[-1], volatility, 0.0, False, bearish_confirmation)
-        if size_factor == 0:
-            return TechnicalSignal("ESPERAR", "volatilidad extrema", score, current_rsi[-1], volatility, 0.0, False, bearish_confirmation)
-        if score >= 2 and confirmation:
+        # En datos en vivo la interfaz puede consultar varias veces la misma
+        # vela. Solo una vela nueva puede armar o ejecutar una señal.
+        if len(hourly) == self._last_bar_count:
             return TechnicalSignal(
-                "COMPRAR", f"{matched} · confirmación EMA 5m", score,
-                current_rsi[-1], volatility, size_factor, True, False,
+                "ESPERAR", "Esperando cierre de vela 1h", 0,
+                buy_armed=self.buy_armed, sell_armed=self.sell_armed,
+                **common,
             )
+        self._last_bar_count = len(hourly)
+
+        was_buy_armed = self.buy_armed
+        was_sell_armed = self.sell_armed
+        oversold = values[0] < 15 and values[1] < 25 and values[2] < 35
+        overbought = values[0] > 80 and values[1] > 65 and values[2] > 60
+        if oversold:
+            self.buy_armed = True
+            self.sell_armed = False
+        if overbought:
+            self.sell_armed = True
+            self.buy_armed = False
+
+        buy_turn = (
+            was_buy_armed
+            and rsi_6[-1] > rsi_6[-2]
+            and rsi_12[-1] >= rsi_12[-2]
+            and hourly[-1] > ema_9[-1]
+        )
+        sell_turn = (
+            was_sell_armed
+            and rsi_6[-1] < rsi_6[-2]
+            and rsi_12[-1] <= rsi_12[-2]
+            and hourly[-1] < ema_9[-1]
+        )
+        bearish_confirmation = hourly[-1] < ema_9[-1] and histogram[-1] < 0
+
+        if size_factor == 0:
+            return TechnicalSignal(
+                "ESPERAR", "volatilidad extrema", 0,
+                bearish_confirmation=bearish_confirmation,
+                buy_armed=self.buy_armed, sell_armed=self.sell_armed,
+                **{**common, "size_factor": 0.0},
+            )
+        if buy_turn:
+            self.buy_armed = False
+            return TechnicalSignal(
+                "COMPRAR", "Giro RSI alcista · cierre 1h sobre EMA(9)", 3,
+                ema_confirmation=True,
+                bearish_confirmation=bearish_confirmation,
+                buy_armed=False, sell_armed=self.sell_armed, **common,
+            )
+        if sell_turn:
+            self.sell_armed = False
+            return TechnicalSignal(
+                "VENDER", "Giro RSI bajista · cierre 1h bajo EMA(9)", 3,
+                bearish_confirmation=True,
+                buy_armed=self.buy_armed, sell_armed=False, **common,
+            )
+
+        if self.buy_armed and values[2] >= 50:
+            self.buy_armed = False
+        if self.sell_armed and values[2] <= 50:
+            self.sell_armed = False
+        status = (
+            "Compra preparada · esperando giro RSI y EMA(9)"
+            if self.buy_armed else
+            "Venta preparada · esperando giro RSI y EMA(9)"
+            if self.sell_armed else
+            "RSI 1h sin señal extrema"
+        )
         return TechnicalSignal(
-            "ESPERAR", f"{trend_text} · {score}/3 condiciones", score,
-            current_rsi[-1], volatility, size_factor, False,
-            bearish_confirmation,
+            "ESPERAR", status, int(oversold or overbought),
+            bearish_confirmation=bearish_confirmation,
+            buy_armed=self.buy_armed, sell_armed=self.sell_armed, **common,
         )
