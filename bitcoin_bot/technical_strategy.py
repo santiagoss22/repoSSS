@@ -88,7 +88,7 @@ class MultiIndicatorStrategy:
     def __init__(self) -> None:
         self.buy_armed = False
         self.sell_armed = False
-        self._last_bar_count = 0
+        self._last_bar_key: tuple[int, float] | None = None
 
     def evaluate(
         self,
@@ -117,13 +117,14 @@ class MultiIndicatorStrategy:
 
         # En datos en vivo la interfaz puede consultar varias veces la misma
         # vela. Solo una vela nueva puede armar o ejecutar una señal.
-        if len(hourly) == self._last_bar_count:
+        bar_key = (len(hourly), hourly[-1])
+        if bar_key == self._last_bar_key:
             return TechnicalSignal(
                 "ESPERAR", "Esperando cierre de vela 1h", 0,
                 buy_armed=self.buy_armed, sell_armed=self.sell_armed,
                 **common,
             )
-        self._last_bar_count = len(hourly)
+        self._last_bar_key = bar_key
 
         was_buy_armed = self.buy_armed
         was_sell_armed = self.sell_armed

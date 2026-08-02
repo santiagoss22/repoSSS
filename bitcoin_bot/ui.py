@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 import os
+import random
 import subprocess
 import sys
 import time
@@ -35,7 +36,13 @@ from PySide6.QtWidgets import (
 
 from bitcoin_bot.backtest import download_coinbase_daily_prices, run_backtest
 from bitcoin_bot.config import BotSettings
-from bitcoin_bot.market_data import Candle, LiveMarketWorker
+from bitcoin_bot.market_data import (
+    Candle,
+    KrakenHistoryLoader,
+    LiveMarketWorker,
+    PUBLIC_MARKET_SOURCES,
+    SIMULATED_TAKER_FEES,
+)
 from bitcoin_bot.persistence import load_state, save_state
 from bitcoin_bot.simulator import (
     PaperAccount,
@@ -121,7 +128,7 @@ class PriceChart(QWidget):
             if lot.bitcoin > 0
         ][-8:]
         self.risk_levels = risk_levels
-        self.chart_range_eur = max(chart_range_eur, 100.0)
+        self.chart_range_eur = max(chart_range_eur, 1.0)
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -381,9 +388,9 @@ class SettingsDialog(QDialog):
         self.inputs["cooldown_ticks"] = cooldown
 
         chart_range = QDoubleSpinBox()
-        chart_range.setRange(500, 100_000)
+        chart_range.setRange(1, 1_000_000_000)
         chart_range.setDecimals(0)
-        chart_range.setSingleStep(500)
+        chart_range.setSingleStep(1)
         chart_range.setSuffix(" €")
         chart_range.setValue(settings.chart_range_eur)
         form.addRow("Rango vertical del gráfico (±)", chart_range)
@@ -453,6 +460,12 @@ class MainWindow(QMainWindow):
         self.live_bid = 0.0
         self.live_ask = 0.0
         self.live_volume_1h = 0.0
+        self.replay_candles: list[Candle] = []
+        self.replay_index = 0
+        self.replay_start_index = 0
+        self.replay_paused = True
+        self.replay_initial_price = 0.0
+        self.replay_loader: KrakenHistoryLoader | None = None
 
         self.brand_icon = QLabel("₿")
         self.brand_icon.setObjectName("brandIcon")
@@ -467,8 +480,11 @@ class MainWindow(QMainWindow):
         self.signal_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.source_combo = QComboBox()
         self.source_combo.addItem("Mercado simulado", "simulated")
-        self.source_combo.addItem("Binance · BTC/EUR", "binance")
-        self.source_combo.addItem("Coinbase · BTC/EUR", "coinbase")
+        for source_id, label in PUBLIC_MARKET_SOURCES.items():
+            self.source_combo.addItem(label, source_id)
+        self.source_combo.addItem(
+            "Kraken histórico acelerado · 1h", "kraken_replay"
+        )
         self.timeframe_combo = QComboBox()
         for timeframe in ("5m", "1h", "1d"):
             self.timeframe_combo.addItem(timeframe, timeframe)
@@ -489,6 +505,28 @@ class MainWindow(QMainWindow):
         )
         self.decision_label.setObjectName("decisionStatus")
         self.decision_label.setWordWrap(True)
+        self.replay_speed_combo = QComboBox()
+        for label, milliseconds in (
+            ("1h = 0,1 s", 100),
+            ("1h = 0,5 s", 500),
+            ("1h = 1 s", 1_000),
+            ("1h = 5 s", 5_000),
+        ):
+            self.replay_speed_combo.addItem(label, milliseconds)
+        self.replay_speed_combo.setCurrentIndex(2)
+        self.replay_scenario_combo = QComboBox()
+        for label, value in (
+            ("Periodo aleatorio", "random"),
+            ("Tendencia alcista", "bull"),
+            ("Tendencia bajista", "bear"),
+            ("Mercado lateral", "sideways"),
+            ("Volatilidad extrema", "volatile"),
+        ):
+            self.replay_scenario_combo.addItem(label, value)
+        self.replay_pause_button = QPushButton("▶ Iniciar")
+        self.replay_random_button = QPushButton("⤨ Nuevo periodo")
+        self.replay_status_label = QLabel("Histórico de Kraken sin cargar")
+        self.replay_status_label.setWordWrap(True)
         self.bot_toggle = QCheckBox("Bot automático")
         self.bot_toggle.setObjectName("botToggle")
 
@@ -540,6 +578,18 @@ class MainWindow(QMainWindow):
         market_header.addWidget(self.timeframe_combo)
         market_header.addWidget(self.signal_label)
 
+        self.replay_panel = QFrame()
+        self.replay_panel.setObjectName("panel")
+        replay_layout = QHBoxLayout(self.replay_panel)
+        replay_layout.setContentsMargins(12, 8, 12, 8)
+        replay_layout.addWidget(QLabel("REPLAY 1H"))
+        replay_layout.addWidget(self.replay_speed_combo)
+        replay_layout.addWidget(self.replay_scenario_combo)
+        replay_layout.addWidget(self.replay_pause_button)
+        replay_layout.addWidget(self.replay_random_button)
+        replay_layout.addWidget(self.replay_status_label, 1)
+        self.replay_panel.setVisible(False)
+
         controls = QHBoxLayout()
         controls.addWidget(self.bot_toggle)
         controls.addStretch()
@@ -579,6 +629,7 @@ class MainWindow(QMainWindow):
         dashboard_layout.setContentsMargins(0, 12, 0, 0)
         dashboard_layout.setSpacing(10)
         dashboard_layout.addLayout(market_header)
+        dashboard_layout.addWidget(self.replay_panel)
         dashboard_layout.addLayout(metrics_grid)
         dashboard_layout.addWidget(chart_panel)
         dashboard_layout.addWidget(risk_panel)
@@ -614,7 +665,7 @@ class MainWindow(QMainWindow):
                 "Compra manual del 20 % inicial",
                 self.settings.max_position_fraction,
                 self.account.fixed_initial_buy_value(
-                    0.20, self.settings.fee_rate
+                    0.20, self._effective_fee_rate()
                 ),
             )
         )
@@ -628,6 +679,11 @@ class MainWindow(QMainWindow):
         self.backtest_button.clicked.connect(self._run_backtest)
         self.source_combo.currentIndexChanged.connect(self._change_market_source)
         self.timeframe_combo.currentTextChanged.connect(self._change_timeframe)
+        self.replay_speed_combo.currentIndexChanged.connect(
+            self._change_replay_speed
+        )
+        self.replay_pause_button.clicked.connect(self._toggle_replay)
+        self.replay_random_button.clicked.connect(self._start_random_replay)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
@@ -653,19 +709,46 @@ class MainWindow(QMainWindow):
 
     def _change_market_source(self) -> None:
         source = self.source_combo.currentData()
+        previous_source = self.market_mode
+        if source == "kraken_replay" and previous_source != "kraken_replay":
+            self._save()
         self._stop_market_worker()
         self.market_mode = source
+        if previous_source == "kraken_replay" and source != "kraken_replay":
+            try:
+                self.account, self.settings = load_state(self.state_path)
+                self.table.setRowCount(0)
+                self._load_trades()
+            except (OSError, ValueError):
+                pass
         self.live_signal_pending = False
+        self.replay_panel.setVisible(source == "kraken_replay")
         if source == "simulated":
+            self.timer.setInterval(1_000)
             self.timeframe_combo.setEnabled(False)
             self.connection_label.setText("● Simulación local")
             self.connection_label.setStyleSheet("color: #94a3b8;")
             self.prices = [self.market.price]
             self._refresh()
             return
+        if source == "kraken_replay":
+            self.timeframe_combo.setCurrentText("1h")
+            self.timeframe_combo.setEnabled(False)
+            self.replay_paused = True
+            self.replay_pause_button.setText("▶ Iniciar")
+            self._change_replay_speed()
+            if self.replay_candles:
+                self._start_random_replay()
+            else:
+                self._load_kraken_history()
+            return
         self.timeframe_combo.setEnabled(True)
+        self.timer.setInterval(1_000)
         self.last_live_update = 0.0
-        self.connection_label.setText("● Conectando…")
+        fee = SIMULATED_TAKER_FEES.get(source, self.settings.fee_rate)
+        self.connection_label.setText(
+            f"● Conectando · paper local · comisión {fee:.2%}"
+        )
         self.connection_label.setStyleSheet("color: #fbbf24;")
         self.market_worker = LiveMarketWorker(
             source,
@@ -678,6 +761,164 @@ class MainWindow(QMainWindow):
         self.market_worker.history_ready.connect(self._on_live_history)
         self.market_worker.status.connect(self._on_market_status)
         self.market_worker.start()
+
+    def _load_kraken_history(self) -> None:
+        if self.replay_loader is not None and self.replay_loader.isRunning():
+            return
+        self.connection_label.setText("● Descargando histórico oficial de Kraken…")
+        self.replay_status_label.setText(
+            "Primera carga: se extrae únicamente BTC/EUR 1h del archivo oficial."
+        )
+        self.replay_pause_button.setEnabled(False)
+        self.replay_random_button.setEnabled(False)
+        self.replay_loader = KrakenHistoryLoader(
+            self.data_dir / "kraken_xbteur_60.csv", self
+        )
+        self.replay_loader.ready.connect(self._on_kraken_history_ready)
+        self.replay_loader.failed.connect(self._on_kraken_history_failed)
+        self.replay_loader.start()
+
+    def _on_kraken_history_ready(self, candles: list[Candle]) -> None:
+        self.replay_candles = candles
+        self.replay_pause_button.setEnabled(True)
+        self.replay_random_button.setEnabled(True)
+        self.connection_label.setText(
+            f"● Kraken histórico · {len(candles):,} velas 1h · paper local"
+        )
+        self.connection_label.setStyleSheet("color: #34d399;")
+        self._start_random_replay()
+
+    def _on_kraken_history_failed(self, message: str) -> None:
+        self.replay_pause_button.setEnabled(False)
+        self.replay_random_button.setEnabled(True)
+        self.connection_label.setText("● No se pudo cargar el histórico")
+        self.connection_label.setStyleSheet("color: #f87171;")
+        self.replay_status_label.setText(message)
+
+    def _change_replay_speed(self) -> None:
+        if self.market_mode == "kraken_replay":
+            self.timer.setInterval(int(self.replay_speed_combo.currentData()))
+
+    def _toggle_replay(self) -> None:
+        if not self.replay_candles:
+            self._load_kraken_history()
+            return
+        self.replay_paused = not self.replay_paused
+        self.replay_pause_button.setText(
+            "▶ Continuar" if self.replay_paused else "⏸ Pausar"
+        )
+
+    def _start_random_replay(self) -> None:
+        if len(self.replay_candles) < 100:
+            self._load_kraken_history()
+            return
+        warmup = 50
+        # 86.400 velas permiten dejar 24 horas reales el replay a 1h = 1s.
+        minimum_run = min(86_400, len(self.replay_candles) - warmup)
+        maximum_start = max(warmup, len(self.replay_candles) - minimum_run)
+        self.replay_start_index = self._pick_replay_start(
+            warmup, maximum_start, self.replay_scenario_combo.currentData()
+        )
+        self.replay_index = self.replay_start_index
+        self.replay_initial_price = self.replay_candles[self.replay_index].close
+        self.account = PaperAccount(
+            minimum_cash_eur=self.settings.minimum_cash_eur,
+            minimum_trade_eur=self.settings.minimum_trade_eur,
+            max_position_fraction=self.settings.max_position_fraction,
+            max_open_lots=self.settings.max_open_lots,
+        )
+        self.strategy = MultiIndicatorStrategy()
+        history = self.replay_candles[
+            self.replay_index - warmup : self.replay_index
+        ]
+        self.live_histories = {"1h": list(history)}
+        self.prices = [candle.close for candle in history]
+        self.market.price = self.replay_initial_price
+        self.table.setRowCount(0)
+        self.replay_paused = True
+        self.replay_pause_button.setText("▶ Iniciar")
+        self.bot_status_label.setText("Bot: replay preparado")
+        self._update_replay_status()
+        self._refresh()
+
+    def _pick_replay_start(
+        self, minimum: int, maximum: int, scenario: str
+    ) -> int:
+        if scenario == "random" or maximum <= minimum:
+            return random.randint(minimum, maximum)
+        candidates: list[int] = []
+        window = 24 * 30
+        for start in range(minimum, maximum + 1, 24):
+            sample = self.replay_candles[start : start + window]
+            if len(sample) < window:
+                continue
+            change = sample[-1].close / sample[0].close - 1
+            range_rate = max(item.high for item in sample) / min(
+                item.low for item in sample
+            ) - 1
+            matches = (
+                scenario == "bull" and change >= 0.20
+                or scenario == "bear" and change <= -0.20
+                or scenario == "sideways" and abs(change) <= 0.05
+                or scenario == "volatile" and range_rate >= 0.50
+            )
+            if matches:
+                candidates.append(start)
+        return random.choice(candidates) if candidates else random.randint(
+            minimum, maximum
+        )
+
+    def _advance_replay(self) -> bool:
+        if self.replay_paused or self.replay_index >= len(self.replay_candles):
+            if self.replay_index >= len(self.replay_candles):
+                self.replay_paused = True
+                self.replay_pause_button.setText("Replay finalizado")
+            return False
+        candle = self.replay_candles[self.replay_index]
+        self.replay_index += 1
+        self.account.replay_time = datetime.fromtimestamp(candle.timestamp_ms / 1000)
+        self.market.price = candle.close
+        self.last_live_update = time.time()
+        self.live_bid = candle.close
+        self.live_ask = candle.close
+        hourly = self.live_histories.setdefault("1h", [])
+        hourly.append(candle)
+        self.live_histories["1h"] = hourly[-1000:]
+        self.prices = [item.close for item in self.live_histories["1h"]]
+        self.live_signal_pending = True
+        self.live_volume_1h = candle.volume
+        self._update_replay_status()
+        return True
+
+    def _update_replay_status(self) -> None:
+        if not self.replay_candles or self.replay_index >= len(self.replay_candles):
+            return
+        candle = self.replay_candles[self.replay_index]
+        current_date = datetime.fromtimestamp(candle.timestamp_ms / 1000)
+        processed = max(0, self.replay_index - self.replay_start_index)
+        session_total = min(
+            86_400, len(self.replay_candles) - self.replay_start_index
+        )
+        progress = processed / session_total if session_total else 0.0
+        equity = self.account.equity(self.market.price)
+        strategy_return = equity / self.account.initial_cash_eur - 1
+        hold_return = (
+            self.market.price / self.replay_initial_price - 1
+            if self.replay_initial_price else 0.0
+        )
+        sales = [trade for trade in self.account.trades if trade.side == "VENTA"]
+        wins = sum(trade.pnl_eur > 0 for trade in sales)
+        win_rate = wins / len(sales) if sales else 0.0
+        self.replay_status_label.setText(
+            f"{current_date:%d/%m/%Y %H:%M} · "
+            f"{processed:,}/{session_total:,} horas ({progress:.1%}) · "
+            f"bot {strategy_return:+.2%} ({equity:,.0f} €) · "
+            f"mantener {hold_return:+.2%} · "
+            f"diferencia {strategy_return - hold_return:+.2%} · "
+            f"operaciones {len(self.account.trades)} · acierto {win_rate:.1%} · "
+            f"comisiones {self.account.total_fees_eur:,.0f} € · "
+            f"drawdown {self.account.max_drawdown:.1%}"
+        )
 
     def _stop_market_worker(self) -> None:
         if self.market_worker is not None:
@@ -693,7 +934,9 @@ class MainWindow(QMainWindow):
         self.connection_label.setText(f"● En vivo · {updated}")
         self.connection_label.setStyleSheet("color: #34d399;")
         self.connection_label.setToolTip(
-            f"Bid {self.live_bid:,.2f} € · Ask {self.live_ask:,.2f} €"
+            f"Bid {self.live_bid:,.2f} € · Ask {self.live_ask:,.2f} € · "
+            f"comisión simulada {self._effective_fee_rate():.2%} · "
+            "sin órdenes reales"
         )
         self._refresh()
 
@@ -734,7 +977,16 @@ class MainWindow(QMainWindow):
             self.prices = [candle.close for candle in candles]
             self._refresh()
 
+    def _effective_fee_rate(self) -> float:
+        """Comisión paper; nunca consulta una cuenta ni una API privada."""
+        return SIMULATED_TAKER_FEES.get(
+            self.market_mode, self.settings.fee_rate
+        )
+
     def _tick(self) -> None:
+        if self.market_mode == "kraken_replay" and not self._advance_replay():
+            self._refresh()
+            return
         live = self.market_mode != "simulated"
         if live:
             hourly_candles = self.live_histories.get("1h", [])
@@ -804,7 +1056,7 @@ class MainWindow(QMainWindow):
                     stopped,
                     self.market.price,
                     f"{stop_kind} ({len(stopped)} lote/s)",
-                    self.settings.fee_rate,
+                    self._effective_fee_rate(),
                     self.settings.slippage_rate,
                 )
                 self.account.record_sale_result(
@@ -853,7 +1105,7 @@ class MainWindow(QMainWindow):
                     defensive,
                     self.market.price,
                     reason,
-                    self.settings.fee_rate,
+                    self._effective_fee_rate(),
                     self.settings.slippage_rate,
                 )
                 self.account.record_sale_result(
@@ -874,7 +1126,7 @@ class MainWindow(QMainWindow):
             profitable = self.account.profitable_lots(
                 self.market.price,
                 self.settings.sell_gain,
-                self.settings.fee_rate,
+                self._effective_fee_rate(),
                 self.settings.slippage_rate,
             )
             if profitable:
@@ -882,7 +1134,7 @@ class MainWindow(QMainWindow):
                     self.market.price,
                     self.settings.sell_gain,
                     f"Objetivo individual alcanzado ({len(profitable)} lote/s)",
-                    fee_rate=self.settings.fee_rate,
+                    fee_rate=self._effective_fee_rate(),
                     slippage_rate=self.settings.slippage_rate,
                 )
                 self.account.record_sale_result(
@@ -918,7 +1170,7 @@ class MainWindow(QMainWindow):
                 profitable = self.account.profitable_lots(
                     self.market.price,
                     0.0,
-                    self.settings.fee_rate,
+                    self._effective_fee_rate(),
                     self.settings.slippage_rate,
                 )
                 if profitable:
@@ -926,7 +1178,7 @@ class MainWindow(QMainWindow):
                         self.market.price,
                         0.0,
                         "Giro RSI bajista confirmado en vela 1h",
-                        fee_rate=self.settings.fee_rate,
+                        fee_rate=self._effective_fee_rate(),
                         slippage_rate=self.settings.slippage_rate,
                     )
                     self.account.record_sale_result(
@@ -955,7 +1207,7 @@ class MainWindow(QMainWindow):
                 and self.account.cooldown_remaining == 0
                 and self.account.can_buy(
                     self.market.price,
-                    fee_rate=self.settings.fee_rate,
+                    fee_rate=self._effective_fee_rate(),
                 )
             ):
                 self._buy_risk_sized(
@@ -990,7 +1242,7 @@ class MainWindow(QMainWindow):
         return "los RSI de 1h todavía no han preparado una señal."
 
     def _risk_pause_reason(self) -> str:
-        now = datetime.now()
+        now = getattr(self.account, "replay_time", None) or datetime.now()
         day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         week_start = day_start - timedelta(days=day_start.weekday())
         daily = self.account.realized_loss_since(day_start)
@@ -1050,7 +1302,7 @@ class MainWindow(QMainWindow):
             budget,
             self.settings.stop_loss,
             maximum_risk,
-            self.settings.fee_rate,
+            self._effective_fee_rate(),
             self.settings.slippage_rate,
         ):
             self.bot_status_label.setText(
@@ -1060,7 +1312,7 @@ class MainWindow(QMainWindow):
                 "Decisión actual: el nuevo lote superaría el 4 % de riesgo conjunto."
             )
             return
-        value = budget / (1 + self.settings.fee_rate)
+        value = budget / (1 + self._effective_fee_rate())
         self._buy(
             reason,
             self.settings.max_position_fraction,
@@ -1087,7 +1339,7 @@ class MainWindow(QMainWindow):
                 requested,
                 reason,
                 max_fraction=fraction,
-                fee_rate=self.settings.fee_rate,
+                fee_rate=self._effective_fee_rate(),
                 slippage_rate=self.settings.slippage_rate,
             )
             self._append_trade()
@@ -1107,7 +1359,7 @@ class MainWindow(QMainWindow):
             trade = self.account.sell_all(
                 self.market.price,
                 reason,
-                fee_rate=self.settings.fee_rate,
+                fee_rate=self._effective_fee_rate(),
                 slippage_rate=self.settings.slippage_rate,
             )
             self.account.record_sale_result(
@@ -1151,6 +1403,9 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.Yes:
             return
         self.bot_toggle.setChecked(False)
+        if self.market_mode == "kraken_replay":
+            self._start_random_replay()
+            return
         self.account = PaperAccount(
             minimum_cash_eur=self.settings.minimum_cash_eur,
             minimum_trade_eur=self.settings.minimum_trade_eur,
@@ -1247,7 +1502,7 @@ class MainWindow(QMainWindow):
         self.account.record_equity(price)
         target = self.account.next_lot_target_price(
             self.settings.sell_gain,
-            self.settings.fee_rate,
+            self._effective_fee_rate(),
             self.settings.slippage_rate,
         )
         stop = self.account.next_stop_price(
@@ -1280,7 +1535,7 @@ class MainWindow(QMainWindow):
         cooldown = self.account.cooldown_remaining
         open_risk = self.account.estimated_open_risk(
             self.settings.stop_loss,
-            self.settings.fee_rate,
+            self._effective_fee_rate(),
             self.settings.slippage_rate,
         )
         stop_text = f"{stop:,.0f} €" if stop else "—"
@@ -1303,7 +1558,7 @@ class MainWindow(QMainWindow):
             )
             + (f" · PAUSADO: {pause}" if pause else "")
         )
-        now = datetime.now()
+        now = getattr(self.account, "replay_time", None) or datetime.now()
         day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         daily_loss = self.account.realized_loss_since(day_start)
         daily_limit = self.account.initial_cash_eur * self.settings.daily_loss_limit
@@ -1328,6 +1583,8 @@ class MainWindow(QMainWindow):
         )
 
     def _save(self) -> None:
+        if self.market_mode == "kraken_replay":
+            return
         try:
             save_state(self.state_path, self.account, self.settings)
         except OSError:

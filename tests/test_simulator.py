@@ -1,11 +1,19 @@
 import unittest
 import random
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from bitcoin_bot.backtest import run_backtest
 from bitcoin_bot.config import BotSettings
-from bitcoin_bot.market_data import Candle, CandleStore
+from bitcoin_bot.market_data import (
+    Candle,
+    CandleStore,
+    LiveMarketWorker,
+    PUBLIC_MARKET_SOURCES,
+    SIMULATED_TAKER_FEES,
+    parse_kraken_hourly_csv,
+)
 from bitcoin_bot.persistence import load_state, save_state
 from bitcoin_bot.simulator import (
     MovingAverageStrategy,
@@ -18,6 +26,14 @@ from bitcoin_bot.technical_strategy import MultiIndicatorStrategy, atr_percent, 
 
 
 class PaperAccountTests(unittest.TestCase):
+    def test_replay_clock_is_used_for_simulated_trades(self):
+        account = PaperAccount()
+        historical_time = datetime(2020, 3, 12, 18, 0)
+        account.replay_time = historical_time
+        trade = account.buy(8_000, 500, "replay")
+        self.assertEqual(trade.timestamp, historical_time)
+        self.assertEqual(account.lots[-1].timestamp, historical_time)
+
     def test_open_risk_budget_blocks_third_standard_lot(self):
         account = PaperAccount(max_position_fraction=0.80, max_open_lots=4)
         fee = 0.006
@@ -336,6 +352,30 @@ class PersistenceTests(unittest.TestCase):
 
 
 class MarketDataTests(unittest.TestCase):
+    def test_kraken_hourly_csv_parser(self):
+        raw = (
+            b"1378854000,100,110,90,105,12.5,42\n"
+            b"1378857600,105,115,100,112,8.0,35\n"
+        )
+        candles = parse_kraken_hourly_csv(raw)
+        self.assertEqual(len(candles), 2)
+        self.assertEqual(candles[0].timestamp_ms, 1_378_854_000_000)
+        self.assertEqual(candles[-1].close, 112)
+
+    def test_kraken_is_public_only_with_conservative_taker_fee(self):
+        self.assertIn("kraken", PUBLIC_MARKET_SOURCES)
+        self.assertEqual(SIMULATED_TAKER_FEES["kraken"], 0.008)
+        with TemporaryDirectory() as directory:
+            worker = LiveMarketWorker(
+                "kraken", "BTC/EUR", Path(directory) / "candles.sqlite"
+            )
+            self.assertEqual(worker.exchange_id, "kraken")
+            with self.assertRaisesRegex(ValueError, "no permitida"):
+                LiveMarketWorker(
+                    "exchange_privado", "BTC/EUR",
+                    Path(directory) / "private.sqlite",
+                )
+
     def test_candles_are_persisted_without_duplicates(self):
         with TemporaryDirectory() as directory:
             store = CandleStore(Path(directory) / "candles.sqlite")
