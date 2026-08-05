@@ -324,6 +324,18 @@ class TrendConfirmationTests(unittest.TestCase):
 
 
 class PersistenceTests(unittest.TestCase):
+    def test_four_large_lots_migrate_to_eight_small_lots(self):
+        settings = BotSettings.from_dict(
+            {
+                "risk_management_version": 2,
+                "max_open_lots": 4,
+                "normal_buy_eur": 2_000.0,
+            }
+        )
+        self.assertEqual(settings.risk_management_version, 3)
+        self.assertEqual(settings.max_open_lots, 8)
+        self.assertEqual(settings.normal_buy_eur, 1_000.0)
+
     def test_old_three_loss_halt_migrates_to_ten(self):
         settings = BotSettings.from_dict({"loss_streak_halt_after": 3})
         self.assertEqual(settings.loss_streak_halt_after, 10)
