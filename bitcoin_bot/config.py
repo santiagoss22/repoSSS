@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 
 @dataclass
 class BotSettings:
-    risk_management_version: int = 2
+    risk_management_version: int = 3
     manual_large_fraction: float = 0.50
     minimum_cash_eur: float = 2_000.0
     minimum_trade_eur: float = 500.0
@@ -29,10 +29,10 @@ class BotSettings:
     bearish_confirmation_ticks: int = 5
     rebound_from_floor: float = 0.015
     max_position_fraction: float = 0.80
-    max_open_lots: int = 4
+    max_open_lots: int = 8
     max_spread: float = 0.002
     max_open_risk: float = 0.04
-    normal_buy_eur: float = 2_000.0
+    normal_buy_eur: float = 1_000.0
     high_volatility_buy_eur: float = 1_000.0
     loss_streak_pause_after: int = 2
     loss_streak_halt_after: int = 10
@@ -69,6 +69,12 @@ class BotSettings:
             values["risk_management_version"] = 2
             if values.get("risk_per_trade", 0.01) == 0.01:
                 values["risk_per_trade"] = 0.005
+        if version < 3:
+            values["risk_management_version"] = 3
+            if values.get("max_open_lots", 4) == 4:
+                values["max_open_lots"] = 8
+            if values.get("normal_buy_eur", 2_000.0) == 2_000.0:
+                values["normal_buy_eur"] = 1_000.0
         if values.get("minimum_buy_price_drop", 0) < 0.012:
             # La versión anterior solo esperaba tres segundos y podía agrupar
             # varias entradas casi al mismo precio.
