@@ -10,7 +10,6 @@ if [[ ! -x ".venv/bin/python" ]]; then
     python3 -m venv .venv
   else
     echo "No se encontró una instalación de Python compatible."
-    echo "Pulsa una tecla para cerrar."
     read -k 1
     exit 1
   fi

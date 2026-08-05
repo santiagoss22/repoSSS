@@ -1,106 +1,73 @@
-# Bitcoin Paper Bot
+# Bots Trading · Bitcoin Paper Trading
 
-Aplicación de escritorio educativa para macOS que simula operaciones de Bitcoin
-con dinero ficticio. No se conecta a ningún exchange y no puede mover dinero real.
+Aplicación educativa para macOS que compara estrategias de trading de Bitcoin
+con dinero ficticio. Nunca envía órdenes reales ni utiliza claves privadas de
+un exchange.
 
-## Funciones
+## Estrategias incluidas
 
-- Precio de BTC simulado localmente.
-- Selector entre mercado simulado y datos públicos BTC/EUR de Binance o Coinbase.
-- Precio, bid, ask y velas en vivo mediante WebSocket de CCXT.
-- Histórico OHLCV local en SQLite para `5m`, `1h` y `1d`.
-- La estrategia en vivo decide únicamente al cerrar una vela de una hora.
-- Bloquea nuevas compras si los datos llevan 30 segundos sin actualizarse o
-  si el spread supera el límite configurado.
-- Precio acotado entre 20.000 € y 200.000 €, con reversión gradual hacia
-  90.000 € para evitar tendencias exponenciales irreales.
-- Cartera inicial de 10.000 €.
-- Compras y ventas manuales.
-- Filtra la tendencia diaria con EMA 50/200 y busca retrocesos mediante RSI,
-  Bandas de Bollinger y mejora del MACD en velas de una hora.
-- Exige al menos dos de tres condiciones y confirmación EMA 9/21 en cinco minutos.
-- Calcula ATR y bloquea señales con volatilidad extrema.
-- Cada lote se vende automáticamente al alcanzar el take-profit neto configurado
-  (4 % de forma predeterminada).
-- Botones de compra manual del 20 % inicial y del 50 %.
-- Cada compra automática reserva exactamente 2.000 €, comisión incluida.
-- Puede efectuar compras sucesivas sin esperar a vender.
-- Conserva siempre un mínimo de 2.000 € en efectivo.
-- No realiza compras inferiores a 500 €; con 2.200 € de efectivo, por ejemplo,
-  no compra porque solo quedarían 200 € disponibles sobre la reserva.
-- Exposición máxima predeterminada del 80 % de la cartera.
-- Máximo estricto de cuatro lotes abiertos simultáneamente.
-- Presupuesto máximo de riesgo abierto del 4 %: antes de comprar proyecta la
-  pérdida conjunta de todos los stops, incluyendo costes.
-- Compra automática de 2.000 € con volatilidad normal y 1.000 € cuando ATR es alto.
-- Calcula el coste medio real de las compras.
-- Simula comisiones y deslizamiento tanto al comprar como al vender.
-- El objetivo de venta se calcula después de esos costes.
-- Stop-loss del 6 % por lote y trailing stop del 1,5 % cuando la ganancia alcanza 2,5 %.
-- Venta defensiva del lote desde una pérdida del 3 % tras cinco confirmaciones
-  bajistas consecutivas de EMA y MACD.
-- Detecta un suelo estable durante 20 ciclos y vende un lote con pérdida si un
-  rebote mínimo del 1,5 % vuelve a girarse a la baja.
-- Tras vender espera 30 ciclos; permite reentrar después de un retroceso del 2 %
-  con confirmación técnica. Una consolidación superior actualiza la referencia.
-- Entre compras espera 15 ciclos y admite entradas más altas cuando EMA y al
-  menos dos indicadores confirman la señal.
-- Cooldown de 15 ciclos después de una salida por pérdida.
-- Pausa automática al perder un 2 % diario o un 4 % semanal.
-- Tras dos pérdidas consecutivas espera 120 ciclos; tras tres bloquea nuevas
-  compras hasta reiniciar o revisar la simulación.
-- Desde un drawdown del 5 % reduce las compras; desde el 8 % las bloquea y al
-  10 % exige revisión manual.
-- Guarda automáticamente la cartera, el historial y la configuración.
-- Permite cambiar porcentajes, ciclos, costes, reserva y protección desde la app.
-- Ejecuta backtests sobre hasta tres años de velas diarias públicas BTC-EUR de Coinbase.
-- Compara la estrategia con comprar y mantener, y muestra aciertos y rentabilidad anualizada.
-- Muestra ganancia y pérdida medias, profit factor, racha máxima de pérdidas y
-  una validación separada sobre el último 30 % del histórico.
-- Marca compras y ventas directamente sobre el gráfico de precios.
-- Mantiene en el lateral el precio de cada lote abierto y su diferencia porcentual.
-- Explica por qué el bot compra, espera o bloquea una operación.
-- Permite reiniciar con confirmación el saldo, BTC, histórico y precio simulado.
-- Mientras el bot automático está activo, evita el reposo inactivo de macOS;
-  la pantalla sí puede apagarse.
-- Panel simplificado con cuatro métricas esenciales y estado de riesgo compacto.
-- Dibuja en el gráfico los niveles de entrada, stop-loss y take-profit.
-- Cada compra mantiene su propio coste, máximo alcanzado, stop y objetivo.
-- Las ventas automáticas no esperan ciclos de subida: cada actualización comprueba
-  take-profit, stop-loss y trailing stop por lote.
+- **bot-RSIs**: RSI(6/12/24), EMA(9/50/200) y MACD sobre velas cerradas de 1h.
+- **bot-Envolvente-BOS**: vela envolvente, quiebre de estructura y retesteo
+  posterior del nivel roto.
 
-El histórico de Coinbase puede contener intervalos sin datos y un backtest no
-predice resultados futuros.
+Cada estrategia abre una interfaz y un proceso independientes. Sus saldos,
+operaciones, configuración e histórico se guardan por separado. El selector
+permite ejecutar ambas simultáneamente para comparar sus simulaciones.
 
-Los feeds de mercado son públicos y no requieren claves. El modo de mercado real
-sigue operando exclusivamente con dinero simulado: no envía órdenes al exchange.
+## Organización
 
-## Funcionamiento con la pantalla apagada
-
-Al activar **Bot automático**, la aplicación inicia el mecanismo estándar
-`caffeinate` de macOS para impedir que el sistema entre en reposo por
-inactividad. La pantalla puede apagarse o bloquearse y el bot seguirá
-simulando. Al desactivar el bot o cerrar la aplicación, esta protección termina.
-
-El programa no puede ejecutarse durante un apagado, reinicio, cierre de sesión
-o pérdida de alimentación.
-- Historial de operaciones y beneficio/pérdida.
-
-## Ejecutar en macOS
-
-Necesitas Python 3.10 o posterior.
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-python -m bitcoin_bot
+```text
+repoSSS/
+├── Abrir simulador de bots.command
+├── launcher.py
+├── bots/
+│   ├── bot-RSIs/
+│   │   ├── strategy.py
+│   │   └── README.md
+│   └── bot-Envolvente-BOS/
+│       ├── strategy.py
+│       └── README.md
+├── bitcoin_bot/              # motor e interfaz compartidos
+│   ├── simulator.py
+│   ├── market_data.py
+│   ├── backtest.py
+│   ├── persistence.py
+│   ├── strategy_loader.py
+│   └── ui.py
+└── tests/
 ```
 
-## Ejecutar las pruebas
+Las ramas se utilizan para desarrollar y revisar cambios; las estrategias
+terminadas permanecen como carpetas dentro de la rama principal.
+
+## Abrir en macOS
+
+Haz doble clic en `Abrir simulador de bots.command`. La primera ejecución crea
+el entorno e instala las dependencias. Después elige un bot o abre los dos.
+
+También puedes iniciar directamente una estrategia:
+
+```bash
+BOT_STRATEGY=bot-RSIs python -m bitcoin_bot
+BOT_STRATEGY=bot-Envolvente-BOS python -m bitcoin_bot
+```
+
+## Protecciones compartidas
+
+- Saldo inicial simulado de 10.000 € y reserva de 2.000 €.
+- Hasta ocho lotes automáticos de 1.000 €.
+- Riesgo, stop-loss, objetivo y trailing adaptados al ATR por lote.
+- Comisiones y slippage simulados.
+- Límites diario, semanal, por drawdown y por racha de pérdidas.
+- Datos públicos de Kraken y replay histórico; no se requieren claves API.
+- Backtest con esperanza, Sharpe, Sortino, exposición, estrés de costes y
+  Monte Carlo.
+
+## Pruebas
 
 ```bash
 python -m unittest discover -s tests
 ```
 
-> Este proyecto es una simulación educativa, no asesoramiento financiero.
+Los resultados históricos no garantizan rentabilidad futura. Este proyecto no
+es asesoramiento financiero.

@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 
 @dataclass
 class BotSettings:
+    strategy_id: str = "bot-RSIs"
     risk_management_version: int = 3
     manual_large_fraction: float = 0.50
     minimum_cash_eur: float = 2_000.0

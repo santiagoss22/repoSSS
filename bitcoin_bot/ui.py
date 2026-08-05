@@ -49,7 +49,12 @@ from bitcoin_bot.simulator import (
     PaperAccount,
     PriceSimulator,
 )
-from bitcoin_bot.technical_strategy import MultiIndicatorStrategy, build_trade_risk_plan
+from bitcoin_bot.strategy_loader import (
+    AVAILABLE_STRATEGIES,
+    create_strategy,
+    selected_strategy,
+)
+from bitcoin_bot.technical_strategy import build_trade_risk_plan
 
 
 class KeepAwakeManager:
@@ -424,7 +429,8 @@ class SettingsDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Bitcoin Paper Bot")
+        self.bot_identity = selected_strategy()
+        self.setWindowTitle(f"{self.bot_identity} · Bitcoin Paper Trading")
         self.resize(1050, 760)
         data_dir = Path(QStandardPaths.writableLocation(QStandardPaths.AppDataLocation))
         self.data_dir = data_dir
@@ -449,7 +455,8 @@ class MainWindow(QMainWindow):
         for lot in self.account.lots:
             lot.frozen = False
         self.market = PriceSimulator(initial_price=self.account.last_market_price_eur)
-        self.strategy = MultiIndicatorStrategy(self.settings)
+        self.settings.strategy_id = self.bot_identity
+        self.strategy = create_strategy(self.settings)
         self.current_size_factor = 1.0
         self.keep_awake = KeepAwakeManager()
         self.prices = [self.market.price]
@@ -470,9 +477,11 @@ class MainWindow(QMainWindow):
 
         self.brand_icon = QLabel("₿")
         self.brand_icon.setObjectName("brandIcon")
-        self.brand_title = QLabel("BITCOIN PAPER BOT")
+        self.brand_title = QLabel(self.bot_identity.upper())
         self.brand_title.setObjectName("brandTitle")
-        self.brand_subtitle = QLabel("Simulación · Estrategia automática · Sin dinero real")
+        self.brand_subtitle = QLabel(
+            f"{AVAILABLE_STRATEGIES[self.bot_identity]} · Velas 1h · Sin dinero real"
+        )
         self.brand_subtitle.setObjectName("brandSubtitle")
         self.price_label = QLabel()
         self.price_label.setObjectName("price")
@@ -828,7 +837,7 @@ class MainWindow(QMainWindow):
             max_position_fraction=self.settings.max_position_fraction,
             max_open_lots=self.settings.max_open_lots,
         )
-        self.strategy = MultiIndicatorStrategy(self.settings)
+        self.strategy = create_strategy(self.settings)
         history = self.replay_candles[
             self.replay_index - warmup : self.replay_index
         ]
@@ -1000,6 +1009,7 @@ class MainWindow(QMainWindow):
             ]
             highs = [candle.high for candle in hourly_candles]
             lows = [candle.low for candle in hourly_candles]
+            opens = [candle.open for candle in hourly_candles]
             allow_strategy = self.live_signal_pending
             self.live_signal_pending = False
         else:
@@ -1007,10 +1017,10 @@ class MainWindow(QMainWindow):
             strategy_prices = self.prices
             five_prices = self.prices
             daily_prices = []
-            highs = lows = None
+            highs = lows = opens = None
             allow_strategy = True
         technical = self.strategy.evaluate(
-            strategy_prices, five_prices, daily_prices, highs, lows
+            strategy_prices, five_prices, daily_prices, highs, lows, opens
         )
         signal = technical.action if allow_strategy else "ESPERAR"
         self.current_size_factor = technical.size_factor
@@ -1160,12 +1170,14 @@ class MainWindow(QMainWindow):
                 action, status = "ESPERAR", "Esperando cierre de vela 1h"
             pause_reason = self._risk_pause_reason() or self._market_pause_reason()
             self.bot_status_label.setText(f"Bot: {status}")
+            details = (
+                f"RSI(6) {technical.rsi_6:.1f} · RSI(12) {technical.rsi_12:.1f} · "
+                f"RSI(24) {technical.rsi_24:.1f}"
+                if self.bot_identity == "bot-RSIs" else f"Patrón: {status}"
+            )
             self.decision_label.setText(
                 f"Decisión actual: {self._decision_explanation(action, status)} "
-                f"RSI(6) {technical.rsi_6:.1f} · "
-                f"RSI(12) {technical.rsi_12:.1f} · "
-                f"RSI(24) {technical.rsi_24:.1f} · "
-                f"ATR {technical.volatility:.2%}."
+                f"{details} · ATR {technical.volatility:.2%}."
             )
             if action == "VENDER":
                 profitable = self.account.profitable_lots(
@@ -1178,7 +1190,7 @@ class MainWindow(QMainWindow):
                     trade = self.account.sell_profitable_lots(
                         self.market.price,
                         0.0,
-                        "Giro RSI bajista confirmado en vela 1h",
+                        self._automatic_sell_reason(),
                         fee_rate=self._effective_fee_rate(),
                         slippage_rate=self.settings.slippage_rate,
                     )
@@ -1212,7 +1224,7 @@ class MainWindow(QMainWindow):
                 )
             ):
                 self._buy_risk_sized(
-                    "Giro RSI alcista confirmado sobre EMA(9) en vela 1h",
+                    self._automatic_buy_reason(),
                     technical.volatility,
                 )
             elif action == "COMPRAR":
@@ -1233,6 +1245,16 @@ class MainWindow(QMainWindow):
         self._refresh()
 
     def _decision_explanation(self, action: str, status: str) -> str:
+        if self.bot_identity == "bot-Envolvente-BOS":
+            if action == "COMPRAR":
+                return "la envolvente alcista rompió estructura y confirmó el retesteo."
+            if action == "VENDER":
+                return "la envolvente bajista rompió estructura y confirmó el retesteo."
+            if "BOS" in status:
+                return "espera que el precio retestee el nivel roto."
+            if "Envolvente" in status:
+                return "espera el quiebre de la estructura marcada."
+            return "todavía no hay una envolvente válida con estructura confirmada."
         if action == "COMPRAR":
             return "el RSI giró al alza y la vela de 1h cerró sobre EMA(9)."
         if action == "VENDER":
@@ -1242,6 +1264,16 @@ class MainWindow(QMainWindow):
         if "Venta preparada" in status:
             return "los tres RSI están en zona alta; espera el giro bajista."
         return "los RSI de 1h todavía no han preparado una señal."
+
+    def _automatic_buy_reason(self) -> str:
+        if self.bot_identity == "bot-Envolvente-BOS":
+            return "Envolvente alcista, BOS y retesteo confirmados en 1h"
+        return "Giro RSI alcista confirmado sobre EMA(9) en vela 1h"
+
+    def _automatic_sell_reason(self) -> str:
+        if self.bot_identity == "bot-Envolvente-BOS":
+            return "Envolvente bajista, BOS y retesteo confirmados en 1h"
+        return "Giro RSI bajista confirmado en vela 1h"
 
     def _risk_pause_reason(self) -> str:
         now = getattr(self.account, "replay_time", None) or datetime.now()
@@ -1450,7 +1482,7 @@ class MainWindow(QMainWindow):
             max_open_lots=self.settings.max_open_lots,
         )
         self.market = PriceSimulator(initial_price=90_000.0)
-        self.strategy = MultiIndicatorStrategy(self.settings)
+        self.strategy = create_strategy(self.settings)
         self.prices = [self.market.price]
         self.table.setRowCount(0)
         self.signal_label.setText("● ESPERAR")
@@ -1737,7 +1769,7 @@ class MainWindow(QMainWindow):
 
 def run() -> None:
     app = QApplication(sys.argv)
-    app.setApplicationName("Bitcoin Paper Bot")
+    app.setApplicationName(os.environ.get("BOT_STRATEGY", "bot-RSIs"))
     app.setOrganizationName("Santiago")
     app.setStyle("Fusion")
     window = MainWindow()

@@ -10,7 +10,8 @@ from urllib.request import Request, urlopen
 
 from bitcoin_bot.config import BotSettings
 from bitcoin_bot.simulator import PaperAccount
-from bitcoin_bot.technical_strategy import MultiIndicatorStrategy, build_trade_risk_plan
+from bitcoin_bot.strategy_loader import create_strategy
+from bitcoin_bot.technical_strategy import build_trade_risk_plan
 
 
 @dataclass(frozen=True)
@@ -87,7 +88,7 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
         max_position_fraction=settings.max_position_fraction,
         max_open_lots=settings.max_open_lots,
     )
-    strategy = MultiIndicatorStrategy(settings)
+    strategy = create_strategy(settings)
     observed: list[float] = []
     equity_curve: list[float] = []
     invested_bars = 0
@@ -188,7 +189,7 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
                 trade = account.sell_profitable_lots(
                     price,
                     0.0,
-                    "Giro RSI bajista 1h",
+                    "Salida técnica confirmada en 1h",
                     fee_rate=settings.fee_rate,
                     slippage_rate=settings.slippage_rate,
                 )
