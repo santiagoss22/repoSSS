@@ -515,6 +515,14 @@ class MainWindow(QMainWindow):
         )
         self.decision_label.setObjectName("decisionStatus")
         self.decision_label.setWordWrap(True)
+        self.diagnostic_counts = dict(
+            velas=0, candidatas=0, quiebres=0, señales=0,
+            costes=0, riesgo=0, compras=0,
+        )
+        self.last_diagnostic_status = ""
+        self.diagnostic_label = QLabel("Diagnóstico: esperando la primera vela evaluada")
+        self.diagnostic_label.setObjectName("decisionStatus")
+        self.diagnostic_label.setWordWrap(True)
         self.replay_speed_combo = QComboBox()
         for label, milliseconds in (
             ("1h = 0,1 s", 100),
@@ -631,6 +639,7 @@ class MainWindow(QMainWindow):
         risk_layout.addWidget(self.risk_status_label)
         risk_layout.addWidget(self.power_status_label)
         risk_layout.addWidget(self.decision_label)
+        risk_layout.addWidget(self.diagnostic_label)
         risk_layout.addWidget(self.drawdown_bar)
         risk_layout.addLayout(controls)
 
@@ -1169,6 +1178,7 @@ class MainWindow(QMainWindow):
             else:
                 action, status = "ESPERAR", "Esperando cierre de vela 1h"
             pause_reason = self._risk_pause_reason() or self._market_pause_reason()
+            self._record_diagnostics(technical, allow_strategy)
             self.bot_status_label.setText(f"Bot: {status}")
             details = (
                 f"RSI(6) {technical.rsi_6:.1f} · RSI(12) {technical.rsi_12:.1f} · "
@@ -1228,6 +1238,8 @@ class MainWindow(QMainWindow):
                     technical.volatility,
                 )
             elif action == "COMPRAR":
+                self.diagnostic_counts["riesgo"] += 1
+                self._update_diagnostic_label()
                 reason = pause_reason or (
                     f"cooldown: quedan {self.account.cooldown_remaining} ciclos"
                     if self.account.cooldown_remaining else
@@ -1274,6 +1286,41 @@ class MainWindow(QMainWindow):
         if self.bot_identity == "bot-Envolvente-BOS":
             return "Envolvente bajista, BOS y retesteo confirmados en 1h"
         return "Giro RSI bajista confirmado en vela 1h"
+
+    def _record_diagnostics(self, technical, allow_strategy: bool) -> None:
+        if not allow_strategy:
+            return
+        self.diagnostic_counts["velas"] += 1
+        status = technical.status
+        if status != self.last_diagnostic_status:
+            candidate = (
+                "Compra preparada" in status
+                if self.bot_identity == "bot-RSIs"
+                else "Envolvente" in status
+            )
+            if candidate:
+                self.diagnostic_counts["candidatas"] += 1
+            if self.bot_identity == "bot-Envolvente-BOS" and "BOS" in status:
+                self.diagnostic_counts["quiebres"] += 1
+            self.last_diagnostic_status = status
+        if technical.action == "COMPRAR":
+            self.diagnostic_counts["señales"] += 1
+        self._update_diagnostic_label()
+
+    def _update_diagnostic_label(self) -> None:
+        d = self.diagnostic_counts
+        if self.bot_identity == "bot-Envolvente-BOS":
+            detail = (
+                f"envolventes {d['candidatas']} · quiebres {d['quiebres']} · "
+                f"retesteos {d['señales']}"
+            )
+        else:
+            detail = f"candidatas RSI {d['candidatas']} · señales {d['señales']}"
+        self.diagnostic_label.setText(
+            f"Diagnóstico: velas {d['velas']} · {detail} · "
+            f"costes {d['costes']} · riesgo/pausa {d['riesgo']} · "
+            f"compras {d['compras']}"
+        )
 
     def _risk_pause_reason(self) -> str:
         now = getattr(self.account, "replay_time", None) or datetime.now()
@@ -1323,6 +1370,8 @@ class MainWindow(QMainWindow):
         fee_rate = self._effective_fee_rate()
         plan = build_trade_risk_plan(volatility, self.settings, fee_rate)
         if not plan.covers_costs:
+            self.diagnostic_counts["costes"] += 1
+            self._update_diagnostic_label()
             self.bot_status_label.setText(
                 "Bot: compra omitida · movimiento esperado no cubre costes"
             )
@@ -1350,6 +1399,8 @@ class MainWindow(QMainWindow):
             ),
         )
         if budget < self.settings.minimum_trade_eur * (1 + fee_rate):
+            self.diagnostic_counts["riesgo"] += 1
+            self._update_diagnostic_label()
             self.bot_status_label.setText(
                 "Bot: compra omitida · tamaño por riesgo inferior al mínimo"
             )
@@ -1365,6 +1416,8 @@ class MainWindow(QMainWindow):
             fee_rate,
             self.settings.slippage_rate,
         ):
+            self.diagnostic_counts["riesgo"] += 1
+            self._update_diagnostic_label()
             self.bot_status_label.setText(
                 "Bot: compra pausada · riesgo abierto máximo alcanzado"
             )
@@ -1373,6 +1426,7 @@ class MainWindow(QMainWindow):
             )
             return
         value = budget / (1 + fee_rate)
+        trades_before = len(self.account.trades)
         self._buy(
             reason,
             self.settings.max_position_fraction,
@@ -1380,6 +1434,9 @@ class MainWindow(QMainWindow):
             show_dialog=False,
             risk_plan=plan,
         )
+        if len(self.account.trades) > trades_before:
+            self.diagnostic_counts["compras"] += 1
+            self._update_diagnostic_label()
 
     def _buy(
         self,
