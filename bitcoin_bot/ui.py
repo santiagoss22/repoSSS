@@ -73,7 +73,7 @@ class KeepAwakeManager:
         if not executable.exists():
             return False
         self.process = subprocess.Popen(
-            [str(executable), "-i", "-w", str(os.getpid())],
+            [str(executable), "-i", "-m", "-s", "-w", str(os.getpid())],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
@@ -773,6 +773,7 @@ class MainWindow(QMainWindow):
         )
         self.replay_pause_button.clicked.connect(self._toggle_replay)
         self.replay_random_button.clicked.connect(self._start_random_replay)
+        self.bot_toggle.setChecked(True)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
@@ -1101,6 +1102,8 @@ class MainWindow(QMainWindow):
         )
 
     def _tick(self) -> None:
+        if self.bot_toggle.isChecked() and not self.keep_awake.active:
+            self._on_bot_toggled(True)
         if self.market_mode == "kraken_replay" and not self._advance_replay():
             self._refresh()
             return
@@ -1358,14 +1361,14 @@ class MainWindow(QMainWindow):
     def _decision_explanation(self, action: str, status: str) -> str:
         if self.bot_identity == "bot-Envolvente-BOS":
             if action == "COMPRAR":
-                return "la vela cerró sobre el máximo de 20h con volumen confirmado."
+                return "la vela cerró sobre el máximo de 12h con volumen confirmado."
             if action == "VENDER":
-                return "la vela cerró bajo el mínimo de 20h con volumen confirmado."
+                return "la vela cerró bajo el mínimo de 12h con volumen confirmado."
             if "sin volumen" in status.lower():
                 return "no hay volumen real para confirmar liquidez."
             if "volumen suficiente" in status.lower():
                 return "hubo ruptura, pero su volumen no confirmó la señal."
-            return "el precio sigue dentro del rango de las últimas 20 horas."
+            return "el precio sigue dentro del rango de las últimas 12 horas."
         if action == "COMPRAR":
             return "el RSI giró al alza y la vela de 1h cerró sobre EMA(9)."
         if action == "VENDER":
@@ -1378,12 +1381,12 @@ class MainWindow(QMainWindow):
 
     def _automatic_buy_reason(self) -> str:
         if self.bot_identity == "bot-Envolvente-BOS":
-            return "Ruptura alcista de 20h con volumen confirmado"
+            return "Ruptura alcista de 12h con volumen confirmado"
         return "Giro RSI alcista confirmado sobre EMA(9) en vela 1h"
 
     def _automatic_sell_reason(self) -> str:
         if self.bot_identity == "bot-Envolvente-BOS":
-            return "Ruptura bajista de 20h con volumen confirmado"
+            return "Ruptura bajista de 12h con volumen confirmado"
         return "Giro RSI bajista confirmado en vela 1h"
 
     def _record_diagnostics(self, technical, allow_strategy: bool) -> None:
@@ -1628,7 +1631,6 @@ class MainWindow(QMainWindow):
         )
         if answer != QMessageBox.Yes:
             return
-        self.bot_toggle.setChecked(False)
         if self.market_mode == "kraken_replay":
             self._start_random_replay()
             return

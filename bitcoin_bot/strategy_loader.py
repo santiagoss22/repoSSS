@@ -8,7 +8,7 @@ from pathlib import Path
 
 AVAILABLE_STRATEGIES = {
     "bot-RSIs": "RSI(6/12/24), EMA y MACD",
-    "bot-Envolvente-BOS": "Ruptura de 20h con volumen 1,3× sobre media de 12h",
+    "bot-Envolvente-BOS": "Ruptura de 12h con volumen 1,3× sobre media de 12h",
 }
 
 

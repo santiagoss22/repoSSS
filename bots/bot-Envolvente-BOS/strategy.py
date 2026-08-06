@@ -125,7 +125,7 @@ class MultiIndicatorStrategy:
         self.structure_level = 0.0
         self.invalidation_level = 0.0
         self.setup_age = 0
-        self.lookback = getattr(settings, "bos_lookback", 20)
+        self.lookback = getattr(settings, "bos_lookback", 12)
         self.volume_multiplier = getattr(settings, "bos_volume_multiplier", 1.3)
         self.volume_lookback = getattr(settings, "bos_volume_lookback", 12)
         self.retest_tolerance = getattr(settings, "bos_retest_tolerance", 0.003)
@@ -191,14 +191,14 @@ class MultiIndicatorStrategy:
             )
         if bullish_breakout and volume_confirmed:
             return TechnicalSignal(
-                "COMPRAR", "Ruptura alcista de 20h con volumen confirmado", 4,
+                "COMPRAR", "Ruptura alcista de 12h con volumen confirmado", 4,
                 ema_confirmation=True,
                 bearish_confirmation=bearish_confirmation,
                 buy_armed=False, sell_armed=self.sell_armed, **common,
             )
         if bearish_breakout and volume_confirmed:
             return TechnicalSignal(
-                "VENDER", "Ruptura bajista de 20h con volumen confirmado", 4,
+                "VENDER", "Ruptura bajista de 12h con volumen confirmado", 4,
                 bearish_confirmation=True,
                 buy_armed=self.buy_armed, sell_armed=False, **common,
             )
@@ -208,7 +208,7 @@ class MultiIndicatorStrategy:
             if not has_volume else
             f"Ruptura sin volumen suficiente (necesita {self.volume_multiplier:.1f}× media 12h)"
             if bullish_breakout or bearish_breakout else
-            f"Buscando ruptura del rango de 20h con volumen ≥ {self.volume_multiplier:.1f}× media 12h"
+            f"Buscando ruptura del rango de 12h con volumen ≥ {self.volume_multiplier:.1f}× media 12h"
         )
         return TechnicalSignal(
             "ESPERAR", status, int(bullish_breakout or bearish_breakout),

@@ -66,6 +66,8 @@ class MultiStrategyTests(unittest.TestCase):
             hourly_volumes=[100.0] * 8 + [10.0] * 12 + [13.0],
         )
         self.assertEqual(signal.action, "COMPRAR")
+        self.assertEqual(strategy.lookback, 12)
+        self.assertEqual(strategy.volume_lookback, 12)
 
 
 if __name__ == "__main__":
