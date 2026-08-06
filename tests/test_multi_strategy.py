@@ -55,6 +55,18 @@ class MultiStrategyTests(unittest.TestCase):
         )
         self.assertEqual(signal.action, "ESPERAR")
 
+    def test_volume_confirmation_uses_previous_twelve_candles(self):
+        with patch.dict(os.environ, {"BOT_STRATEGY": "bot-Envolvente-BOS"}):
+            strategy = create_strategy(BotSettings())
+        signal = strategy.evaluate(
+            [100.0] * 20 + [102.0],
+            hourly_highs=[101.0] * 20 + [102.3],
+            hourly_lows=[99.0] * 20 + [100.2],
+            hourly_opens=[100.0] * 20 + [100.5],
+            hourly_volumes=[100.0] * 8 + [10.0] * 12 + [13.0],
+        )
+        self.assertEqual(signal.action, "COMPRAR")
+
 
 if __name__ == "__main__":
     unittest.main()
