@@ -83,7 +83,33 @@ class KeepAwakeManager:
     def stop(self) -> None:
         if self.active:
             self.process.terminate()
-        self.process = None
+            self.process = None
+
+
+def market_structure_levels(
+    candles: list[Candle], end: int | None = None, pivot_width: int = 2
+) -> tuple[float, list[float], list[float]]:
+    """Devuelve máximo histórico y los cuatro últimos giros ya confirmados."""
+    end = len(candles) if end is None else min(max(end, 0), len(candles))
+    if end == 0:
+        return 0.0, [], []
+    all_time_high = max(candles[index].high for index in range(end))
+    swing_highs: list[float] = []
+    swing_lows: list[float] = []
+    start = max(pivot_width, end - 1_000)
+    for index in range(start, end - pivot_width):
+        neighbours = range(index - pivot_width, index + pivot_width + 1)
+        if all(
+            candles[index].high >= candles[other].high
+            for other in neighbours if other != index
+        ):
+            swing_highs.append(candles[index].high)
+        if all(
+            candles[index].low <= candles[other].low
+            for other in neighbours if other != index
+        ):
+            swing_lows.append(candles[index].low)
+    return all_time_high, swing_highs[-4:], swing_lows[-4:]
 
 
 class MetricCard(QFrame):
@@ -561,6 +587,9 @@ class MainWindow(QMainWindow):
         self.diagnostic_label = QLabel("Diagnóstico: esperando la primera vela evaluada")
         self.diagnostic_label.setObjectName("decisionStatus")
         self.diagnostic_label.setWordWrap(True)
+        self.structure_label = QLabel("Estructura: esperando velas históricas")
+        self.structure_label.setWordWrap(True)
+        self.structure_label.setStyleSheet("color: #7f93aa; font-size: 10px;")
         self.replay_speed_combo = QComboBox()
         for label, milliseconds in (
             ("1h = 0,1 s", 100),
@@ -669,6 +698,7 @@ class MainWindow(QMainWindow):
         chart_title.setObjectName("sectionTitle")
         chart_layout.addWidget(chart_title)
         chart_layout.addWidget(self.chart)
+        chart_layout.addWidget(self.structure_label)
 
         risk_panel = QFrame()
         risk_panel.setObjectName("panel")
@@ -680,7 +710,6 @@ class MainWindow(QMainWindow):
         risk_layout.addWidget(self.risk_status_label)
         risk_layout.addWidget(self.power_status_label)
         risk_layout.addWidget(self.decision_label)
-        risk_layout.addWidget(self.diagnostic_label)
         risk_layout.addWidget(self.drawdown_bar)
         risk_layout.addLayout(controls)
 
@@ -1795,6 +1824,23 @@ class MainWindow(QMainWindow):
                 self.live_histories.get(self.timeframe_combo.currentText(), [])
                 if self.market_mode != "simulated" else None
             ),
+        )
+        structure_candles = (
+            self.replay_candles if self.market_mode == "kraken_replay"
+            else self.live_histories.get("1h", [])
+        )
+        structure_end = (
+            self.replay_index if self.market_mode == "kraken_replay" else None
+        )
+        historical_high, relative_highs, relative_lows = market_structure_levels(
+            structure_candles, structure_end
+        )
+        highs_text = " · ".join(f"{value:,.0f} €" for value in relative_highs) or "—"
+        lows_text = " · ".join(f"{value:,.0f} €" for value in relative_lows) or "—"
+        self.structure_label.setText(
+            f"MÁXIMO HISTÓRICO {historical_high:,.0f} €  |  "
+            f"Máx. relativos: {highs_text}  |  Mín. relativos: {lows_text}"
+            if historical_high else "Estructura: esperando velas históricas"
         )
 
     def _save(self) -> None:

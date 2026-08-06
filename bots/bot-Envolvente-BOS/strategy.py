@@ -127,6 +127,7 @@ class MultiIndicatorStrategy:
         self.setup_age = 0
         self.lookback = getattr(settings, "bos_lookback", 20)
         self.volume_multiplier = getattr(settings, "bos_volume_multiplier", 1.3)
+        self.volume_lookback = getattr(settings, "bos_volume_lookback", 12)
         self.retest_tolerance = getattr(settings, "bos_retest_tolerance", 0.003)
         self.maximum_setup_bars = getattr(settings, "bos_max_setup_bars", 12)
 
@@ -168,9 +169,9 @@ class MultiIndicatorStrategy:
         prior_high = max(highs[-self.lookback - 1:-1])
         prior_low = min(lows[-self.lookback - 1:-1])
         volumes = hourly_volumes or []
-        has_volume = len(volumes) >= self.lookback + 1
+        has_volume = len(volumes) >= self.volume_lookback + 1
         average_volume = (
-            sum(volumes[-self.lookback - 1:-1]) / self.lookback
+            sum(volumes[-self.volume_lookback - 1:-1]) / self.volume_lookback
             if has_volume else 0.0
         )
         volume_confirmed = (
@@ -205,9 +206,9 @@ class MultiIndicatorStrategy:
         status = (
             "Sin volumen real: la liquidez no puede confirmarse"
             if not has_volume else
-            f"Ruptura sin volumen suficiente (necesita {self.volume_multiplier:.1f}× media 20h)"
+            f"Ruptura sin volumen suficiente (necesita {self.volume_multiplier:.1f}× media 12h)"
             if bullish_breakout or bearish_breakout else
-            f"Buscando ruptura del rango de 20h con volumen ≥ {self.volume_multiplier:.1f}×"
+            f"Buscando ruptura del rango de 20h con volumen ≥ {self.volume_multiplier:.1f}× media 12h"
         )
         return TechnicalSignal(
             "ESPERAR", status, int(bullish_breakout or bearish_breakout),
