@@ -17,49 +17,43 @@ class MultiStrategyTests(unittest.TestCase):
             strategy = create_strategy(BotSettings())
         self.assertEqual(strategy.__class__.__module__, "bitcoin_bot_strategy_bot_RSIs")
 
-    def test_bullish_engulfing_bos_and_later_retest_buys(self):
+    def test_bullish_breakout_with_volume_buys_immediately(self):
         with patch.dict(os.environ, {"BOT_STRATEGY": "bot-Envolvente-BOS"}):
             strategy = create_strategy(BotSettings())
-        prices = [100.0] * 13 + [99.5, 100.5]
-        opens = [100.0] * 13 + [100.0, 99.4]
-        highs = [101.0] * 13 + [100.2, 100.8]
-        lows = [99.0] * 13 + [99.3, 99.2]
-        armed = strategy.evaluate(
-            prices, hourly_highs=highs, hourly_lows=lows, hourly_opens=opens
+        prices = [100.0] * 20 + [102.0]
+        signal = strategy.evaluate(
+            prices,
+            hourly_highs=[101.0] * 20 + [102.3],
+            hourly_lows=[99.0] * 20 + [100.2],
+            hourly_opens=[100.0] * 20 + [100.5],
+            hourly_volumes=[10.0] * 20 + [13.0],
         )
-        self.assertTrue(armed.buy_armed)
-        broken = strategy.evaluate(
-            prices + [102.0], hourly_highs=highs + [102.3],
-            hourly_lows=lows + [100.4], hourly_opens=opens + [100.5]
-        )
-        self.assertEqual(broken.action, "ESPERAR")
-        confirmed = strategy.evaluate(
-            prices + [102.0, 101.6], hourly_highs=highs + [102.3, 101.8],
-            hourly_lows=lows + [100.4, 100.9],
-            hourly_opens=opens + [100.5, 101.4]
-        )
-        self.assertEqual(confirmed.action, "COMPRAR")
+        self.assertEqual(signal.action, "COMPRAR")
 
-    def test_bearish_engulfing_bos_and_later_retest_sells(self):
+    def test_bearish_breakout_with_volume_sells_immediately(self):
         with patch.dict(os.environ, {"BOT_STRATEGY": "bot-Envolvente-BOS"}):
             strategy = create_strategy(BotSettings())
-        prices = [100.0] * 13 + [100.5, 99.4]
-        opens = [100.0] * 13 + [100.0, 100.6]
-        highs = [101.0] * 13 + [100.7, 100.8]
-        lows = [99.0] * 13 + [99.8, 99.2]
-        strategy.evaluate(
-            prices, hourly_highs=highs, hourly_lows=lows, hourly_opens=opens
+        prices = [100.0] * 20 + [98.0]
+        signal = strategy.evaluate(
+            prices,
+            hourly_highs=[101.0] * 20 + [99.8],
+            hourly_lows=[99.0] * 20 + [97.7],
+            hourly_opens=[100.0] * 20 + [99.5],
+            hourly_volumes=[10.0] * 20 + [13.0],
         )
-        strategy.evaluate(
-            prices + [98.0], hourly_highs=highs + [99.5],
-            hourly_lows=lows + [97.8], hourly_opens=opens + [99.4]
+        self.assertEqual(signal.action, "VENDER")
+
+    def test_breakout_without_required_volume_waits(self):
+        with patch.dict(os.environ, {"BOT_STRATEGY": "bot-Envolvente-BOS"}):
+            strategy = create_strategy(BotSettings())
+        signal = strategy.evaluate(
+            [100.0] * 20 + [102.0],
+            hourly_highs=[101.0] * 20 + [102.3],
+            hourly_lows=[99.0] * 20 + [100.2],
+            hourly_opens=[100.0] * 20 + [100.5],
+            hourly_volumes=[10.0] * 20 + [12.9],
         )
-        confirmed = strategy.evaluate(
-            prices + [98.0, 98.4], hourly_highs=highs + [99.5, 99.1],
-            hourly_lows=lows + [97.8, 98.2],
-            hourly_opens=opens + [99.4, 98.6]
-        )
-        self.assertEqual(confirmed.action, "VENDER")
+        self.assertEqual(signal.action, "ESPERAR")
 
 
 if __name__ == "__main__":

@@ -57,6 +57,8 @@ class BotSettings:
     sell_rsi_24: float = 60.0
     trend_fast_ema: int = 50
     trend_slow_ema: int = 200
+    bos_lookback: int = 20
+    bos_volume_multiplier: float = 1.30
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -64,6 +66,8 @@ class BotSettings:
     @classmethod
     def from_dict(cls, values: dict) -> "BotSettings":
         values = dict(values)
+        values["bos_lookback"] = 20
+        values["bos_volume_multiplier"] = 1.30
         legacy_risk_management = "risk_management_version" not in values
         version = int(values.get("risk_management_version", 0))
         if version < 2:
