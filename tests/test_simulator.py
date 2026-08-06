@@ -12,6 +12,7 @@ from bitcoin_bot.market_data import (
     LiveMarketWorker,
     PUBLIC_MARKET_SOURCES,
     SIMULATED_TAKER_FEES,
+    kraken_replay_period,
     parse_kraken_hourly_csv,
 )
 from bitcoin_bot.persistence import load_state, save_state
@@ -373,6 +374,17 @@ class MarketDataTests(unittest.TestCase):
         self.assertEqual(len(candles), 2)
         self.assertEqual(candles[0].timestamp_ms, 1_378_854_000_000)
         self.assertEqual(candles[-1].close, 112)
+
+    def test_kraken_replay_is_limited_to_2015_through_2025(self):
+        candles = [
+            Candle(1_420_066_800_000, 1, 1, 1, 1, 1),
+            Candle(1_420_070_400_000, 2, 2, 2, 2, 2),
+            Candle(1_767_222_000_000, 3, 3, 3, 3, 3),
+            Candle(1_767_225_600_000, 4, 4, 4, 4, 4),
+        ]
+        self.assertEqual(
+            [candle.close for candle in kraken_replay_period(candles)], [2, 3]
+        )
 
     def test_kraken_is_public_only_with_conservative_taker_fee(self):
         self.assertIn("kraken", PUBLIC_MARKET_SOURCES)

@@ -79,7 +79,9 @@ def download_coinbase_daily_prices(limit: int = 1_095) -> list[float]:
     return [float(candle[4]) for candle in ordered]
 
 
-def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
+def run_backtest(
+    prices: list[float], settings: BotSettings, candles: list | None = None
+) -> BacktestResult:
     if len(prices) < settings.trend_slow_ema + 2:
         raise ValueError("No hay suficientes precios para ejecutar el backtest.")
     account = PaperAccount(
@@ -92,8 +94,11 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
     observed: list[float] = []
     equity_curve: list[float] = []
     invested_bars = 0
-    for price in prices:
+    observed_candles: list = []
+    for index, price in enumerate(prices):
         observed.append(price)
+        if candles and index < len(candles):
+            observed_candles.append(candles[index])
         account.record_equity(price)
         equity_curve.append(account.equity(price))
         invested_bars += bool(account.lots)
@@ -109,7 +114,13 @@ def run_backtest(prices: list[float], settings: BotSettings) -> BacktestResult:
             price, settings.stable_reference_ticks,
             settings.stable_reference_range,
         )
-        technical = strategy.evaluate(observed, observed, [])
+        technical = strategy.evaluate(
+            observed, observed, [],
+            [candle.high for candle in observed_candles] or None,
+            [candle.low for candle in observed_candles] or None,
+            [candle.open for candle in observed_candles] or None,
+            [candle.volume for candle in observed_candles] or None,
+        )
         rebound_failed = account.update_defensive_exit(
             price, technical.bearish_confirmation,
             settings.stable_reference_ticks, settings.stable_reference_range,

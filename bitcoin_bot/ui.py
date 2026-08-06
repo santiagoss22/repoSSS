@@ -40,7 +40,6 @@ from bitcoin_bot.market_data import (
     Candle,
     KrakenHistoryLoader,
     LiveMarketWorker,
-    PUBLIC_MARKET_SOURCES,
     SIMULATED_TAKER_FEES,
     download_kraken_hourly_history,
 )
@@ -114,6 +113,7 @@ class PriceChart(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.prices: list[float] = []
+        self.candles: list[Candle] = []
         self.trades = []
         self.purchase_levels: list[tuple[float, bool]] = []
         self.risk_levels: tuple[float, float] = (0.0, 0.0)
@@ -123,8 +123,13 @@ class PriceChart(QWidget):
         self, prices: list[float], trades: list, lots: list,
         risk_levels: tuple[float, float] = (0.0, 0.0),
         chart_range_eur: float = 2_000.0,
+        candles: list[Candle] | None = None,
     ) -> None:
-        self.prices = prices[-120:]
+        self.candles = list(candles[-120:]) if candles else []
+        self.prices = (
+            [candle.close for candle in self.candles]
+            if self.candles else prices[-120:]
+        )
         # Las compras se dibujan desde los lotes abiertos, no desde el historial.
         # Así desaparecen del gráfico en cuanto se vende el lote correspondiente.
         self.trades = [trade for trade in trades if trade.side == "VENTA"][-40:]
@@ -150,7 +155,8 @@ class PriceChart(QWidget):
         spread = max(high - low, 1.0)
         left, right = 132, 84
         width = max(self.width() - left - right, 1)
-        height = max(self.height() - 24, 1)
+        volume_height = 48 if self.candles else 0
+        height = max(self.height() - 24 - volume_height, 1)
         plot_right = left + width
         self._plot_right = plot_right
         self._draw_y_axis(painter, low, high, left, plot_right, height)
@@ -161,20 +167,16 @@ class PriceChart(QWidget):
             )
             for index, price in enumerate(self.prices)
         ]
-        path = QPainterPath()
-        path.moveTo(points[0][0], points[0][1])
-        for point in points[1:]:
-            path.lineTo(point[0], point[1])
-        area = QPainterPath(path)
-        area.lineTo(points[-1][0], self.height() - 12)
-        area.lineTo(points[0][0], self.height() - 12)
-        area.closeSubpath()
-        gradient = QLinearGradient(0, 0, 0, self.height())
-        gradient.setColorAt(0, QColor(245, 158, 11, 90))
-        gradient.setColorAt(1, QColor(245, 158, 11, 3))
-        painter.fillPath(area, gradient)
-        painter.setPen(QPen(QColor("#f59e0b"), 2))
-        painter.drawPath(path)
+        if self.candles:
+            self._draw_candles(painter, low, high, height, left, width)
+            self._draw_volume(painter, left, width, height, volume_height)
+        else:
+            path = QPainterPath()
+            path.moveTo(points[0][0], points[0][1])
+            for point in points[1:]:
+                path.lineTo(point[0], point[1])
+            painter.setPen(QPen(QColor("#f59e0b"), 2))
+            painter.drawPath(path)
         self._draw_purchase_levels(painter, low, high, height, left)
         self._draw_risk_levels(painter, low, high, height, left)
         # Sitúa cada operación en el punto visible cuyo precio más se aproxima
@@ -199,6 +201,42 @@ class PriceChart(QWidget):
             painter.drawText(int(x) + 7, int(y) - 7, label)
         self._draw_active_purchase_points(painter, points)
 
+    def _draw_candles(self, painter, low, high, height, left, width) -> None:
+        spread = max(high - low, 1.0)
+        step = width / max(len(self.candles), 1)
+        body_width = max(2.0, min(step * 0.64, 9.0))
+        for index, candle in enumerate(self.candles):
+            x = left + (index + 0.5) * step
+            color = QColor("#22c55e" if candle.close >= candle.open else "#ef4444")
+            high_y = 12 + (high - candle.high) * height / spread
+            low_y = 12 + (high - candle.low) * height / spread
+            open_y = 12 + (high - candle.open) * height / spread
+            close_y = 12 + (high - candle.close) * height / spread
+            painter.setPen(QPen(color, 1))
+            painter.drawLine(int(x), int(high_y), int(x), int(low_y))
+            top = min(open_y, close_y)
+            body_height = max(abs(close_y - open_y), 1.5)
+            painter.fillRect(
+                int(x - body_width / 2), int(top), int(body_width),
+                max(1, int(body_height)), color,
+            )
+
+    def _draw_volume(self, painter, left, width, price_height, volume_height) -> None:
+        maximum = max((candle.volume for candle in self.candles), default=0.0)
+        if maximum <= 0:
+            return
+        step = width / max(len(self.candles), 1)
+        base = 12 + price_height + volume_height - 4
+        painter.setPen(QPen(QColor("#64748b"), 1))
+        painter.drawText(left, 12 + price_height + 13, "VOLUMEN BTC")
+        for index, candle in enumerate(self.candles):
+            bar_height = candle.volume / maximum * (volume_height - 18)
+            color = QColor("#166b55" if candle.close >= candle.open else "#7f3340")
+            painter.fillRect(
+                int(left + index * step + 1), int(base - bar_height),
+                max(1, int(step - 2)), max(1, int(bar_height)), color,
+            )
+
     def _draw_y_axis(
         self,
         painter: QPainter,
@@ -210,7 +248,7 @@ class PriceChart(QWidget):
     ) -> None:
         painter.setFont(QFont("Sans Serif", 9))
         painter.setPen(QPen(QColor("#334155"), 1))
-        painter.drawLine(int(plot_right), 12, int(plot_right), self.height() - 12)
+        painter.drawLine(int(plot_right), 12, int(plot_right), int(12 + height))
         divisions = 5
         for division in range(divisions + 1):
             ratio = division / divisions
@@ -256,7 +294,7 @@ class PriceChart(QWidget):
         occupied: list[float] = []
         for level, frozen in self.purchase_levels:
             raw_y = 12 + (high - level) * height / spread
-            top, bottom, separation = 14, self.height() - 14, 17
+            top, bottom, separation = 14, min(self.height() - 14, int(12 + height)), 17
             preferred = min(max(raw_y, top), bottom)
             candidates = [preferred]
             candidates.extend(
@@ -278,7 +316,7 @@ class PriceChart(QWidget):
             y = min(available, key=lambda candidate: abs(candidate - preferred))
             occupied.append(y)
             difference = (current / level - 1) * 100
-            arrow = "↑" if raw_y < 14 else "↓" if raw_y > self.height() - 14 else ""
+            arrow = "↑" if raw_y < top else "↓" if raw_y > bottom else ""
             color = QColor("#14b8a6" if frozen else "#22c55e")
             painter.setPen(QPen(color, 1, Qt.DashLine))
             plot_right = int(
@@ -303,7 +341,7 @@ class PriceChart(QWidget):
             if level <= 0:
                 continue
             raw_y = 12 + (high - level) * height / spread
-            y = min(max(raw_y, 14), self.height() - 14)
+            y = min(max(raw_y, 14), min(self.height() - 14, 12 + height))
             color = QColor(color_name)
             painter.setPen(QPen(color, 1, Qt.DotLine))
             plot_right = int(getattr(self, "_plot_right", self.width() - 12))
@@ -473,6 +511,8 @@ class MainWindow(QMainWindow):
         self.replay_start_index = 0
         self.replay_paused = True
         self.replay_initial_price = 0.0
+        self.replay_real_elapsed = 0.0
+        self.replay_running_since: float | None = None
         self.replay_loader: KrakenHistoryLoader | None = None
 
         self.brand_icon = QLabel("₿")
@@ -489,12 +529,10 @@ class MainWindow(QMainWindow):
         self.signal_label.setObjectName("signalBadge")
         self.signal_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.source_combo = QComboBox()
-        self.source_combo.addItem("Mercado simulado", "simulated")
-        for source_id, label in PUBLIC_MARKET_SOURCES.items():
-            self.source_combo.addItem(label, source_id)
         self.source_combo.addItem(
-            "Kraken histórico acelerado · 1h", "kraken_replay"
+            "BTC/EUR real · Kraken histórico · 1h", "kraken_replay"
         )
+        self.source_combo.setEnabled(False)
         self.timeframe_combo = QComboBox()
         for timeframe in ("5m", "1h", "1d"):
             self.timeframe_combo.addItem(timeframe, timeframe)
@@ -545,6 +583,8 @@ class MainWindow(QMainWindow):
         self.replay_random_button = QPushButton("⤨ Nuevo periodo")
         self.replay_status_label = QLabel("Histórico de Kraken sin cargar")
         self.replay_status_label.setWordWrap(True)
+        self.replay_clock_label = QLabel("Real 00:00:00 · Simulado 0h · 1h = 1s")
+        self.replay_clock_label.setStyleSheet("color: #7f93aa; font-size: 10px;")
         self.bot_toggle = QCheckBox("Bot automático")
         self.bot_toggle.setObjectName("botToggle")
 
@@ -605,6 +645,7 @@ class MainWindow(QMainWindow):
         replay_layout.addWidget(self.replay_scenario_combo)
         replay_layout.addWidget(self.replay_pause_button)
         replay_layout.addWidget(self.replay_random_button)
+        replay_layout.addWidget(self.replay_clock_label)
         replay_layout.addWidget(self.replay_status_label, 1)
         self.replay_panel.setVisible(False)
 
@@ -707,6 +748,7 @@ class MainWindow(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.timer.start(1_000)
+        self._change_market_source()
         self._refresh()
 
     def _on_bot_toggled(self, enabled: bool) -> None:
@@ -786,7 +828,7 @@ class MainWindow(QMainWindow):
             return
         self.connection_label.setText("● Descargando histórico oficial de Kraken…")
         self.replay_status_label.setText(
-            "Primera carga: se extrae únicamente BTC/EUR 1h del archivo oficial."
+            "Cargando BTC/EUR real 1h de Kraken · 01/2015–12/2025."
         )
         self.replay_pause_button.setEnabled(False)
         self.replay_random_button.setEnabled(False)
@@ -802,7 +844,7 @@ class MainWindow(QMainWindow):
         self.replay_pause_button.setEnabled(True)
         self.replay_random_button.setEnabled(True)
         self.connection_label.setText(
-            f"● Kraken histórico · {len(candles):,} velas 1h · paper local"
+            f"● Kraken real 01/2015–12/2025 · {len(candles):,} velas 1h · paper local"
         )
         self.connection_label.setStyleSheet("color: #34d399;")
         self._start_random_replay()
@@ -817,15 +859,24 @@ class MainWindow(QMainWindow):
     def _change_replay_speed(self) -> None:
         if self.market_mode == "kraken_replay":
             self.timer.setInterval(int(self.replay_speed_combo.currentData()))
+            self._update_replay_status()
 
     def _toggle_replay(self) -> None:
         if not self.replay_candles:
             self._load_kraken_history()
             return
+        now = time.monotonic()
         self.replay_paused = not self.replay_paused
+        if self.replay_paused:
+            if self.replay_running_since is not None:
+                self.replay_real_elapsed += now - self.replay_running_since
+            self.replay_running_since = None
+        else:
+            self.replay_running_since = now
         self.replay_pause_button.setText(
             "▶ Continuar" if self.replay_paused else "⏸ Pausar"
         )
+        self._update_replay_status()
 
     def _start_random_replay(self) -> None:
         if len(self.replay_candles) < 100:
@@ -840,6 +891,8 @@ class MainWindow(QMainWindow):
         )
         self.replay_index = self.replay_start_index
         self.replay_initial_price = self.replay_candles[self.replay_index].close
+        self.replay_real_elapsed = 0.0
+        self.replay_running_since = None
         self.account = PaperAccount(
             minimum_cash_eur=self.settings.minimum_cash_eur,
             minimum_trade_eur=self.settings.minimum_trade_eur,
@@ -919,6 +972,22 @@ class MainWindow(QMainWindow):
             86_400, len(self.replay_candles) - self.replay_start_index
         )
         progress = processed / session_total if session_total else 0.0
+        real_elapsed = self.replay_real_elapsed
+        if self.replay_running_since is not None:
+            real_elapsed += time.monotonic() - self.replay_running_since
+        real_seconds = int(real_elapsed)
+        real_clock = (
+            f"{real_seconds // 3600:02d}:"
+            f"{real_seconds % 3600 // 60:02d}:"
+            f"{real_seconds % 60:02d}"
+        )
+        simulated_days, simulated_hours = divmod(processed, 24)
+        speed_seconds = int(self.replay_speed_combo.currentData()) / 1000
+        speed_text = str(speed_seconds).replace(".", ",")
+        self.replay_clock_label.setText(
+            f"Real {real_clock} · Simulado {simulated_days}d {simulated_hours}h"
+            f" · 1h = {speed_text}s"
+        )
         equity = self.account.equity(self.market.price)
         strategy_return = equity / self.account.initial_cash_eur - 1
         hold_return = (
@@ -1019,6 +1088,7 @@ class MainWindow(QMainWindow):
             highs = [candle.high for candle in hourly_candles]
             lows = [candle.low for candle in hourly_candles]
             opens = [candle.open for candle in hourly_candles]
+            volumes = [candle.volume for candle in hourly_candles]
             allow_strategy = self.live_signal_pending
             self.live_signal_pending = False
         else:
@@ -1026,10 +1096,10 @@ class MainWindow(QMainWindow):
             strategy_prices = self.prices
             five_prices = self.prices
             daily_prices = []
-            highs = lows = opens = None
+            highs = lows = opens = volumes = None
             allow_strategy = True
         technical = self.strategy.evaluate(
-            strategy_prices, five_prices, daily_prices, highs, lows, opens
+            strategy_prices, five_prices, daily_prices, highs, lows, opens, volumes
         )
         signal = technical.action if allow_strategy else "ESPERAR"
         self.current_size_factor = technical.size_factor
@@ -1259,14 +1329,14 @@ class MainWindow(QMainWindow):
     def _decision_explanation(self, action: str, status: str) -> str:
         if self.bot_identity == "bot-Envolvente-BOS":
             if action == "COMPRAR":
-                return "la envolvente alcista rompió estructura y confirmó el retesteo."
+                return "la vela cerró sobre el máximo de 20h con volumen confirmado."
             if action == "VENDER":
-                return "la envolvente bajista rompió estructura y confirmó el retesteo."
-            if "BOS" in status:
-                return "espera que el precio retestee el nivel roto."
-            if "Envolvente" in status:
-                return "espera el quiebre de la estructura marcada."
-            return "todavía no hay una envolvente válida con estructura confirmada."
+                return "la vela cerró bajo el mínimo de 20h con volumen confirmado."
+            if "sin volumen" in status.lower():
+                return "no hay volumen real para confirmar liquidez."
+            if "volumen suficiente" in status.lower():
+                return "hubo ruptura, pero su volumen no confirmó la señal."
+            return "el precio sigue dentro del rango de las últimas 20 horas."
         if action == "COMPRAR":
             return "el RSI giró al alza y la vela de 1h cerró sobre EMA(9)."
         if action == "VENDER":
@@ -1279,12 +1349,12 @@ class MainWindow(QMainWindow):
 
     def _automatic_buy_reason(self) -> str:
         if self.bot_identity == "bot-Envolvente-BOS":
-            return "Envolvente alcista, BOS y retesteo confirmados en 1h"
+            return "Ruptura alcista de 20h con volumen confirmado"
         return "Giro RSI alcista confirmado sobre EMA(9) en vela 1h"
 
     def _automatic_sell_reason(self) -> str:
         if self.bot_identity == "bot-Envolvente-BOS":
-            return "Envolvente bajista, BOS y retesteo confirmados en 1h"
+            return "Ruptura bajista de 20h con volumen confirmado"
         return "Giro RSI bajista confirmado en vela 1h"
 
     def _record_diagnostics(self, technical, allow_strategy: bool) -> None:
@@ -1296,11 +1366,11 @@ class MainWindow(QMainWindow):
             candidate = (
                 "Compra preparada" in status
                 if self.bot_identity == "bot-RSIs"
-                else "Envolvente" in status
+                else "Ruptura sin volumen" in status
             )
             if candidate:
                 self.diagnostic_counts["candidatas"] += 1
-            if self.bot_identity == "bot-Envolvente-BOS" and "BOS" in status:
+            if self.bot_identity == "bot-Envolvente-BOS" and "Ruptura" in status:
                 self.diagnostic_counts["quiebres"] += 1
             self.last_diagnostic_status = status
         if technical.action == "COMPRAR":
@@ -1311,8 +1381,8 @@ class MainWindow(QMainWindow):
         d = self.diagnostic_counts
         if self.bot_identity == "bot-Envolvente-BOS":
             detail = (
-                f"envolventes {d['candidatas']} · quiebres {d['quiebres']} · "
-                f"retesteos {d['señales']}"
+                f"rupturas sin volumen {d['candidatas']} · "
+                f"rupturas {d['quiebres']} · señales con volumen {d['señales']}"
             )
         else:
             detail = f"candidatas RSI {d['candidatas']} · señales {d['señales']}"
@@ -1561,10 +1631,12 @@ class MainWindow(QMainWindow):
                 self.data_dir / "kraken_xbteur_60.csv"
             )
             prices = [candle.close for candle in candles]
-            result = run_backtest(prices, self.settings)
+            result = run_backtest(prices, self.settings, candles)
             validation_start = max(0, int(len(prices) * 0.70))
             validation_prices = prices[validation_start:]
-            validation = run_backtest(validation_prices, self.settings)
+            validation = run_backtest(
+                validation_prices, self.settings, candles[validation_start:]
+            )
             robustness = evaluate_robustness(prices, self.settings)
             QMessageBox.information(
                 self,
@@ -1719,6 +1791,10 @@ class MainWindow(QMainWindow):
             self.account.lots,
             (stop, target),
             self.settings.chart_range_eur,
+            (
+                self.live_histories.get(self.timeframe_combo.currentText(), [])
+                if self.market_mode != "simulated" else None
+            ),
         )
 
     def _save(self) -> None:

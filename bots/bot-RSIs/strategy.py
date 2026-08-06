@@ -139,6 +139,7 @@ class MultiIndicatorStrategy:
         hourly_highs: list[float] | None = None,
         hourly_lows: list[float] | None = None,
         hourly_opens: list[float] | None = None,
+        hourly_volumes: list[float] | None = None,
     ) -> TechnicalSignal:
         if len(hourly) < self.trend_slow + 2:
             return TechnicalSignal(

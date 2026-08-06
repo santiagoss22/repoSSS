@@ -28,6 +28,8 @@ SIMULATED_TAKER_FEES = {"kraken": 0.008, "kraken_replay": 0.008}
 
 KRAKEN_ARCHIVE_ID = "1ptNqWYidLkhb2VAKuLCxmp2OXEfGO-AP"
 KRAKEN_HOURLY_FILENAME = "master_q4/XBTEUR_60.csv"
+KRAKEN_REPLAY_START_MS = 1_420_070_400_000
+KRAKEN_REPLAY_END_MS = 1_767_225_600_000
 
 
 @dataclass(frozen=True)
@@ -94,6 +96,14 @@ def parse_kraken_hourly_csv(data: bytes) -> list[Candle]:
     return sorted(candles, key=lambda candle: candle.timestamp_ms)
 
 
+def kraken_replay_period(candles: list[Candle]) -> list[Candle]:
+    """Limita el paper trading al histórico completo 2015–2025."""
+    return [
+        candle for candle in candles
+        if KRAKEN_REPLAY_START_MS <= candle.timestamp_ms < KRAKEN_REPLAY_END_MS
+    ]
+
+
 def _kraken_archive_download_url() -> str:
     page = urlopen(
         f"https://drive.google.com/uc?export=download&id={KRAKEN_ARCHIVE_ID}",
@@ -139,7 +149,7 @@ def _zip64_local_offset(extra: bytes, fields: tuple) -> int:
 def download_kraken_hourly_history(cache_path: Path) -> list[Candle]:
     """Extrae solo BTC/EUR 1h del ZIP oficial de 7,3 GB mediante rangos HTTP."""
     if cache_path.exists() and cache_path.stat().st_size > 100_000:
-        return parse_kraken_hourly_csv(cache_path.read_bytes())
+        return kraken_replay_period(parse_kraken_hourly_csv(cache_path.read_bytes()))
 
     url = _kraken_archive_download_url()
     tail = _download_range(url, "-65536")
@@ -190,7 +200,7 @@ def download_kraken_hourly_history(cache_path: Path) -> list[Candle]:
         raise RuntimeError(f"Compresión ZIP no compatible: {method}")
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_bytes(raw)
-    return parse_kraken_hourly_csv(raw)
+    return kraken_replay_period(parse_kraken_hourly_csv(raw))
 
 
 class KrakenHistoryLoader(QThread):

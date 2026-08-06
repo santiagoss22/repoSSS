@@ -115,7 +115,7 @@ def build_trade_risk_plan(volatility: float, settings, fee_rate: float) -> Trade
 
 
 class MultiIndicatorStrategy:
-    """Envolvente, quiebre de estructura y retesteo sobre velas cerradas de 1h."""
+    """Ruptura de estructura con volumen sobre velas cerradas de 1h."""
 
     def __init__(self, settings=None) -> None:
         self.buy_armed = False
@@ -125,7 +125,8 @@ class MultiIndicatorStrategy:
         self.structure_level = 0.0
         self.invalidation_level = 0.0
         self.setup_age = 0
-        self.lookback = getattr(settings, "bos_lookback", 12)
+        self.lookback = getattr(settings, "bos_lookback", 20)
+        self.volume_multiplier = getattr(settings, "bos_volume_multiplier", 1.3)
         self.retest_tolerance = getattr(settings, "bos_retest_tolerance", 0.003)
         self.maximum_setup_bars = getattr(settings, "bos_max_setup_bars", 12)
 
@@ -137,8 +138,9 @@ class MultiIndicatorStrategy:
         hourly_highs: list[float] | None = None,
         hourly_lows: list[float] | None = None,
         hourly_opens: list[float] | None = None,
+        hourly_volumes: list[float] | None = None,
     ) -> TechnicalSignal:
-        minimum = self.lookback + 3
+        minimum = self.lookback + 1
         if len(hourly) < minimum:
             return TechnicalSignal(
                 "ESPERAR", "Estructura calentando", 0, 50.0, 0.0, 0.0
@@ -163,64 +165,21 @@ class MultiIndicatorStrategy:
                 **common,
             )
         self._last_bar_key = bar_key
-        was_bullish_broken = self.phase == "bullish_broken"
-        was_bearish_broken = self.phase == "bearish_broken"
-
-        previous_bearish = hourly[-2] < opens[-2]
-        previous_bullish = hourly[-2] > opens[-2]
-        bullish_engulfing = (
-            previous_bearish and hourly[-1] > opens[-1]
-            and opens[-1] <= hourly[-2] and hourly[-1] >= opens[-2]
+        prior_high = max(highs[-self.lookback - 1:-1])
+        prior_low = min(lows[-self.lookback - 1:-1])
+        volumes = hourly_volumes or []
+        has_volume = len(volumes) >= self.lookback + 1
+        average_volume = (
+            sum(volumes[-self.lookback - 1:-1]) / self.lookback
+            if has_volume else 0.0
         )
-        bearish_engulfing = (
-            previous_bullish and hourly[-1] < opens[-1]
-            and opens[-1] >= hourly[-2] and hourly[-1] <= opens[-2]
+        volume_confirmed = (
+            has_volume and average_volume > 0
+            and volumes[-1] >= average_volume * self.volume_multiplier
         )
-        prior_high = max(highs[-self.lookback - 2:-2])
-        prior_low = min(lows[-self.lookback - 2:-2])
-
-        new_setup = bullish_engulfing or bearish_engulfing
-        if bullish_engulfing:
-            self.buy_armed = True
-            self.sell_armed = False
-            self.phase = "bullish_engulfing"
-            self.structure_level = prior_high
-            self.invalidation_level = min(lows[-2:])
-            self.setup_age = 0
-        elif bearish_engulfing:
-            self.sell_armed = True
-            self.buy_armed = False
-            self.phase = "bearish_engulfing"
-            self.structure_level = prior_low
-            self.invalidation_level = max(highs[-2:])
-            self.setup_age = 0
-        elif self.phase != "idle":
-            self.setup_age += 1
-
-        if (
-            not new_setup and self.phase == "bullish_engulfing"
-            and hourly[-1] > self.structure_level
-        ):
-            self.phase = "bullish_broken"
-        elif (
-            not new_setup and self.phase == "bearish_engulfing"
-            and hourly[-1] < self.structure_level
-        ):
-            self.phase = "bearish_broken"
-
-        bullish_retest = (
-            was_bullish_broken and self.phase == "bullish_broken"
-            and lows[-1] <= self.structure_level * (1 + self.retest_tolerance)
-            and hourly[-1] >= self.structure_level
-            and hourly[-1] > opens[-1]
-        )
-        bearish_retest = (
-            was_bearish_broken and self.phase == "bearish_broken"
-            and highs[-1] >= self.structure_level * (1 - self.retest_tolerance)
-            and hourly[-1] <= self.structure_level
-            and hourly[-1] < opens[-1]
-        )
-        bearish_confirmation = self.phase.startswith("bearish")
+        bullish_breakout = hourly[-1] > prior_high and hourly[-1] > opens[-1]
+        bearish_breakout = hourly[-1] < prior_low and hourly[-1] < opens[-1]
+        bearish_confirmation = bearish_breakout and volume_confirmed
 
         if size_factor == 0:
             return TechnicalSignal(
@@ -229,41 +188,29 @@ class MultiIndicatorStrategy:
                 buy_armed=self.buy_armed, sell_armed=self.sell_armed,
                 **{**common, "size_factor": 0.0},
             )
-        if bullish_retest:
-            self.buy_armed = False
-            self.phase = "idle"
+        if bullish_breakout and volume_confirmed:
             return TechnicalSignal(
-                "COMPRAR", "Envolvente alcista · BOS y retesteo confirmados", 4,
+                "COMPRAR", "Ruptura alcista de 20h con volumen confirmado", 4,
                 ema_confirmation=True,
                 bearish_confirmation=bearish_confirmation,
                 buy_armed=False, sell_armed=self.sell_armed, **common,
             )
-        if bearish_retest:
-            self.sell_armed = False
-            self.phase = "idle"
+        if bearish_breakout and volume_confirmed:
             return TechnicalSignal(
-                "VENDER", "Envolvente bajista · BOS y retesteo confirmados", 4,
+                "VENDER", "Ruptura bajista de 20h con volumen confirmado", 4,
                 bearish_confirmation=True,
                 buy_armed=self.buy_armed, sell_armed=False, **common,
             )
 
-        if self.setup_age > self.maximum_setup_bars:
-            self.buy_armed = False
-            self.sell_armed = False
-            self.phase = "idle"
         status = (
-            f"Envolvente alcista · esperando BOS sobre {self.structure_level:,.0f} €"
-            if self.phase == "bullish_engulfing" else
-            f"BOS alcista · esperando retesteo de {self.structure_level:,.0f} €"
-            if self.phase == "bullish_broken" else
-            f"Envolvente bajista · esperando BOS bajo {self.structure_level:,.0f} €"
-            if self.phase == "bearish_engulfing" else
-            f"BOS bajista · esperando retesteo de {self.structure_level:,.0f} €"
-            if self.phase == "bearish_broken" else
-            "Buscando envolvente válida en estructura de 1h"
+            "Sin volumen real: la liquidez no puede confirmarse"
+            if not has_volume else
+            f"Ruptura sin volumen suficiente (necesita {self.volume_multiplier:.1f}× media 20h)"
+            if bullish_breakout or bearish_breakout else
+            f"Buscando ruptura del rango de 20h con volumen ≥ {self.volume_multiplier:.1f}×"
         )
         return TechnicalSignal(
-            "ESPERAR", status, int(bullish_engulfing or bearish_engulfing),
+            "ESPERAR", status, int(bullish_breakout or bearish_breakout),
             bearish_confirmation=bearish_confirmation,
             buy_armed=self.buy_armed, sell_armed=self.sell_armed, **common,
         )
